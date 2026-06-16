@@ -9,5 +9,14 @@
     <Nullable>enable</Nullable>
     <LangVersion>latest</LangVersion>
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+
+    <!--
+      IMPORTANT: bump this before every release that should trigger an update
+      in players' Dalamud installers. DalamudPackager reads the COMPILED
+      assembly's version (via reflection) to stamp the manifest — it does NOT
+      read the AssemblyVersion field in SkyrimCompass.json, so editing that
+      file by hand has no effect. This is the one and only place that matters.
+    -->
+    <Version>1.0.1.0</Version>
   </PropertyGroup>
 </Project>
