@@ -1,0 +1,8 @@
+C:\Users\Justi\Downloads\files\obj\Release\SkyrimCompass.csproj.AssemblyReference.cache
+C:\Users\Justi\Downloads\files\obj\Release\SkyrimCompass.GeneratedMSBuildEditorConfig.editorconfig
+C:\Users\Justi\Downloads\files\obj\Release\SkyrimCompass.AssemblyInfoInputs.cache
+C:\Users\Justi\Downloads\files\obj\Release\SkyrimCompass.AssemblyInfo.cs
+C:\Users\Justi\Downloads\files\obj\Release\SkyrimCompass.csproj.CoreCompileInputs.cache
+C:\Users\Justi\Downloads\files\bin\Release\SkyrimCompass.deps.json
+C:\Users\Justi\Downloads\files\bin\Release\SkyrimCompass.dll
+C:\Users\Justi\Downloads\files\obj\Release\SkyrimCompass.dll
