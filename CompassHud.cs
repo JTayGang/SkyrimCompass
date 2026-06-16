@@ -402,7 +402,9 @@ public sealed class CompassHud
 
                 return C(config.EnemyColor);
             case ObjectKind.EventNpc:
-                return config.ShowNpcs ? C(config.NpcColor) : 0u;
+                if (!config.ShowNpcs) return 0u;
+                if (config.NpcsOnlyIfTargetable && !obj.IsTargetable) return 0u;
+                return C(config.NpcColor);
             case ObjectKind.GatheringPoint:
                 return config.ShowGatheringNodes ? C(config.GatheringColor) : 0u;
             case ObjectKind.Treasure:

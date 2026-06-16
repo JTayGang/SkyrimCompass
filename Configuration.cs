@@ -64,6 +64,14 @@ public class Configuration : IPluginConfiguration
     /// </summary>
     public bool EnemiesOnlyIfEngaged { get; set; } = false;
     public bool ShowNpcs          { get; set; } = false;
+    /// <summary>
+    /// When enabled, hides EventNpc objects that aren't currently targetable.
+    /// FFXIV's object table often keeps inert placeholder/anchor entries around
+    /// even when nothing is actually standing there — e.g. an unoccupied chocobo
+    /// stable slot in housing — which otherwise show up as "ghost" markers with
+    /// nothing visibly present. On by default since these are pure clutter.
+    /// </summary>
+    public bool NpcsOnlyIfTargetable { get; set; } = true;
     public bool ShowGatheringNodes{ get; set; } = true;
     public bool ShowTreasure      { get; set; } = true;
     /// <summary>

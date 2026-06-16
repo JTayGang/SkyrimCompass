@@ -213,6 +213,20 @@ public sealed class ConfigWindow : Window
         ImGui.SameLine();
         if (ImGui.ColorEdit4("NPCs##npcs_c", ref c, ColorPickerFlags))       { cfg.NpcColor = c;      changed = true; }
 
+        ImGui.Indent();
+        ImGui.BeginDisabled(!cfg.ShowNpcs);
+        bool tgt = cfg.NpcsOnlyIfTargetable;
+        if (ImGui.Checkbox("Hide non-targetable \"ghost\" NPCs##tgt", ref tgt))
+        { cfg.NpcsOnlyIfTargetable = tgt; changed = true; }
+        if (ImGui.IsItemHovered())
+            ImGui.SetTooltip(
+                "Filters out inert placeholder NPCs that the game keeps in its object\n" +
+                "table even when nothing is actually standing there — e.g. an empty\n" +
+                "chocobo stable slot in housing. Recommended to leave this on.");
+        ImGui.EndDisabled();
+        ImGui.Unindent();
+        ImGui.Spacing();
+
         b = cfg.ShowGatheringNodes; c = cfg.GatheringColor;
         if (ImGui.Checkbox("##gath_en", ref b))           { cfg.ShowGatheringNodes = b; changed = true; }
         ImGui.SameLine();
