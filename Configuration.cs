@@ -15,7 +15,7 @@ public class Configuration : IPluginConfiguration
 
     // ── Layout ───────────────────────────────────────────────────────────────
     public float CompassWidth    { get; set; } = 560f;
-    public float CompassHeight   { get; set; } = 46f;
+    public float CompassHeight   { get; set; } = 35f;
     public float YOffset         { get; set; } = 8f;
 
     // ── Behaviour ────────────────────────────────────────────────────────────
@@ -26,7 +26,7 @@ public class Configuration : IPluginConfiguration
     /// Higher values show a wider FOV at the edges while keeping the centre at normal scale.
     /// 1.5 shows ~50 % more degrees; 2.0 shows ~100 % more.
     /// </summary>
-    public float LensStrength    { get; set; } = 1.6f;
+    public float LensStrength    { get; set; } = 2.0f;
     /// <summary>Added to the computed heading (degrees). Set to 180 if N/S appear swapped.</summary>
     public float RotationOffset  { get; set; } = 0f;
     /// <summary>
@@ -35,7 +35,7 @@ public class Configuration : IPluginConfiguration
     /// </summary>
     public bool  UseCameraDirection { get; set; } = false;
     public float FontScale       { get; set; } = 1.0f;
-    public bool  ShowHeadingText { get; set; } = true;
+    public bool  ShowHeadingText { get; set; } = false;
 
     // ── Colors ───────────────────────────────────────────────────────────────
     // Brownish-dark background evokes Skyrim's leathery UI
@@ -48,18 +48,18 @@ public class Configuration : IPluginConfiguration
     // ── Marker toggles ───────────────────────────────────────────────────────
     public bool ShowPlayers       { get; set; } = true;
     public bool ShowEnemies       { get; set; } = true;
-    public bool ShowNpcs          { get; set; } = false;
+    public bool ShowNpcs          { get; set; } = true;
     public bool ShowGatheringNodes{ get; set; } = true;
     public bool ShowTreasure      { get; set; } = true;
-    public float MaxMarkerDistance{ get; set; } = 60f;
+    public float MaxMarkerDistance{ get; set; } = 100f;
 
     // Dot distance-fade curve (all values are fractions of max detection range, 0–1)
     /// <summary>Dots are fully opaque when closer than this fraction of max range (e.g. 0.85 = within 15%).</summary>
-    public float DotNearZone  { get; set; } = 0.85f;
+    public float DotNearZone  { get; set; } = 0.95f;
     /// <summary>Below this fraction dots begin their final fade to zero (e.g. 0.25 = outer 25%).</summary>
-    public float DotFarZone   { get; set; } = 0.25f;
+    public float DotFarZone   { get; set; } = 0.325f;
     /// <summary>Opacity at the mid/far boundary (0 = invisible, 1 = fully opaque).</summary>
-    public float DotMidAlpha  { get; set; } = 0.50f;
+    public float DotMidAlpha  { get; set; } = 0.325f;
 
     // ── Marker colors ────────────────────────────────────────────────────────
     public Vector4 PlayerColor   { get; set; } = new(0.40f, 0.65f, 1.00f, 0.92f);
