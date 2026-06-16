@@ -120,8 +120,8 @@ Toggle each entity category and choose its dot colour.
 
 **`System.Runtime` version mismatch error** → Install .NET SDK 10.0.101+.
 
-**`ImGuiNET not found`** → Make sure you're using the new `.csproj` (Dalamud.NET.Sdk 14.0.2),
-not the old one with manual `<Reference>` tags.
+**`ImGuiNET not found`** → Make sure you're using the current `.csproj` (`Dalamud.NET.Sdk/15.0.0`, using
+the `Dalamud.Bindings.ImGui` namespace), not an old one with manual `<Reference>` tags or `using ImGuiNET;`.
 
 **N and S are swapped** → Layout tab → set *Rotation Offset* to `180`.
 
