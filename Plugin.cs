@@ -24,6 +24,7 @@ public sealed class Plugin : IDalamudPlugin
         ICommandManager commandManager,
         IClientState clientState,
         IObjectTable objectTable,
+        ITargetManager targetManager,
         IPluginLog pluginLog)
     {
         PluginInterface = pluginInterface;
@@ -32,7 +33,7 @@ public sealed class Plugin : IDalamudPlugin
 
         Config = pluginInterface.GetPluginConfig() as Configuration ?? new Configuration();
 
-        compassHud = new CompassHud(clientState, objectTable, Config, pluginLog);
+        compassHud = new CompassHud(clientState, objectTable, targetManager, Config, pluginLog);
         configWindow = new ConfigWindow(this);
 
         windowSystem.AddWindow(configWindow);

@@ -179,6 +179,20 @@ public sealed class ConfigWindow : Window
         ImGui.SameLine();
         if (ImGui.ColorEdit4("Enemies##enemies_c", ref c, ColorPickerFlags)) { cfg.EnemyColor = c;    changed = true; }
 
+        ImGui.Indent();
+        ImGui.BeginDisabled(!cfg.ShowEnemies);
+        bool eng = cfg.EnemiesOnlyIfEngaged;
+        if (ImGui.Checkbox("Only show enemies I'm engaged with##eng", ref eng))
+        { cfg.EnemiesOnlyIfEngaged = eng; changed = true; }
+        if (ImGui.IsItemHovered())
+            ImGui.SetTooltip(
+                "Only shows hostile enemies that are targeting you, or that you're\n" +
+                "currently targeting — instead of every hostile mob in range.\n" +
+                "Great for decluttering big pulls, hunt trains, and FATEs.");
+        ImGui.EndDisabled();
+        ImGui.Unindent();
+        ImGui.Spacing();
+
         b = cfg.ShowNpcs;      c = cfg.NpcColor;
         if (ImGui.Checkbox("##npcs_en", ref b))           { cfg.ShowNpcs = b;           changed = true; }
         ImGui.SameLine();
@@ -195,7 +209,7 @@ public sealed class ConfigWindow : Window
         if (ImGui.ColorEdit4("Treasure##tres_c", ref c, ColorPickerFlags))   { cfg.TreasureColor = c; changed = true; }
 
         ImGui.Spacing();
-        ImGui.TextDisabled("Maximum detection distance:");
+        ImGui.TextDisabled("Maximum detection distance (straight-line, includes height):");
         float md = cfg.MaxMarkerDistance;
         if (ImGui.SliderFloat("yalms##maxd", ref md, 10f, 200f))
         { cfg.MaxMarkerDistance = md; changed = true; }

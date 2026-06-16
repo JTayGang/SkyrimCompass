@@ -48,6 +48,13 @@ public class Configuration : IPluginConfiguration
     // ── Marker toggles ───────────────────────────────────────────────────────
     public bool ShowPlayers       { get; set; } = true;
     public bool ShowEnemies       { get; set; } = true;
+    /// <summary>
+    /// When enabled, only shows hostile enemies that are currently targeting the
+    /// player or that the player is currently targeting — i.e. enemies you're
+    /// actually engaged with, rather than every hostile mob in range. Useful for
+    /// decluttering big pulls, hunt trains, and FATEs.
+    /// </summary>
+    public bool EnemiesOnlyIfEngaged { get; set; } = false;
     public bool ShowNpcs          { get; set; } = false;
     public bool ShowGatheringNodes{ get; set; } = true;
     public bool ShowTreasure      { get; set; } = true;

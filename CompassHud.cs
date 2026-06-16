@@ -19,6 +19,7 @@ public sealed class CompassHud
 {
     private readonly IClientState clientState;
     private readonly IObjectTable objectTable;
+    private readonly ITargetManager targetManager;
     private readonly Configuration config;
     private readonly IPluginLog log;
 
@@ -37,13 +38,15 @@ public sealed class CompassHud
     public CompassHud(
         IClientState clientState,
         IObjectTable objectTable,
+        ITargetManager targetManager,
         Configuration config,
         IPluginLog log)
     {
-        this.clientState = clientState;
-        this.objectTable = objectTable;
-        this.config      = config;
-        this.log         = log;
+        this.clientState    = clientState;
+        this.objectTable    = objectTable;
+        this.targetManager  = targetManager;
+        this.config         = config;
+        this.log            = log;
     }
 
     // ── Public entry ─────────────────────────────────────────────────────────
@@ -306,7 +309,7 @@ public sealed class CompassHud
 
             if (dsq > maxDistSq || dsq < 0.25f) continue;
 
-            uint col = MarkerColor(obj);
+            uint col = MarkerColor(obj, player);
             if (col == 0) continue;
 
             float bearing = Normalize(MathF.Atan2(dx, -dz) * (180f / MathF.PI));
@@ -350,7 +353,7 @@ public sealed class CompassHud
         }
     }
 
-    private uint MarkerColor(IGameObject obj)
+    private uint MarkerColor(IGameObject obj, IPlayerCharacter player)
     {
         switch (obj.ObjectKind)
         {
@@ -358,9 +361,20 @@ public sealed class CompassHud
                 return config.ShowPlayers ? C(config.PlayerColor) : 0u;
             case ObjectKind.BattleNpc:
                 if (!config.ShowEnemies) return 0u;
-                if (obj is IBattleNpc bnpc && bnpc.BattleNpcKind == BattleNpcSubKind.Combatant)
-                    return C(config.EnemyColor);
-                return 0u;
+                if (obj is not IBattleNpc bnpc || bnpc.BattleNpcKind != BattleNpcSubKind.Combatant)
+                    return 0u;
+
+                if (config.EnemiesOnlyIfEngaged)
+                {
+                    // Note: comparisons use GameObjectId (ulong), not EntityId (uint) —
+                    // those are two distinct ID spaces in this engine, and TargetObjectId
+                    // is expressed in GameObjectId terms.
+                    bool targetingMe    = obj.TargetObjectId == player.GameObjectId;
+                    bool iAmTargetingIt = targetManager.Target?.GameObjectId == obj.GameObjectId;
+                    if (!targetingMe && !iAmTargetingIt) return 0u;
+                }
+
+                return C(config.EnemyColor);
             case ObjectKind.EventNpc:
                 return config.ShowNpcs ? C(config.NpcColor) : 0u;
             case ObjectKind.GatheringPoint:
