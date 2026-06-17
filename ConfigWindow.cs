@@ -223,6 +223,27 @@ public sealed class ConfigWindow : Window
                 "Filters out inert placeholder NPCs that the game keeps in its object\n" +
                 "table even when nothing is actually standing there — e.g. an empty\n" +
                 "chocobo stable slot in housing. Recommended to leave this on.");
+
+        bool qIcon = cfg.ShowNpcQuestIcons;
+        if (ImGui.Checkbox("Show real quest marker icons##qicon", ref qIcon))
+        { cfg.ShowNpcQuestIcons = qIcon; changed = true; }
+        if (ImGui.IsItemHovered())
+            ImGui.SetTooltip(
+                "NPCs with an active quest marker (MSQ, side quest \"!\", blue quest,\n" +
+                "in-progress \"?\", etc.) show that exact icon — the same one the game\n" +
+                "already displays above their head — instead of a plain dot.");
+
+        ImGui.BeginDisabled(!qIcon);
+        ImGui.Indent();
+        float qMin = cfg.NpcQuestIconMinSize;
+        if (ImGui.SliderFloat("Min size (far away)##qmin", ref qMin, 8f, 50f))
+        { cfg.NpcQuestIconMinSize = qMin; changed = true; }
+        float qMax = cfg.NpcQuestIconMaxSize;
+        if (ImGui.SliderFloat("Max size (close up)##qmax", ref qMax, 8f, 60f))
+        { cfg.NpcQuestIconMaxSize = qMax; changed = true; }
+        ImGui.Unindent();
+        ImGui.EndDisabled();
+
         ImGui.EndDisabled();
         ImGui.Unindent();
         ImGui.Spacing();

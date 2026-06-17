@@ -1,8 +1,11 @@
 using System;
+using System.Collections.Generic;
 using System.Numerics;
 using Dalamud.Game.ClientState.Objects.Enums;
 using Dalamud.Game.ClientState.Objects.SubKinds;
 using Dalamud.Game.ClientState.Objects.Types;
+using Dalamud.Game.Gui.NamePlate;
+using Dalamud.Interface.Textures;
 using Dalamud.Plugin.Services;
 using Dalamud.Bindings.ImGui;
 using FFXIVClientStructs.FFXIV.Client.Game;
@@ -15,13 +18,19 @@ namespace SkyrimCompass;
 /// Uses a fisheye/lens projection so the centre looks normal while the edges
 /// compress more degrees into each pixel, revealing a wider FOV without clutter.
 /// </summary>
-public sealed class CompassHud
+public sealed class CompassHud : IDisposable
 {
     private readonly IClientState clientState;
     private readonly IObjectTable objectTable;
     private readonly ITargetManager targetManager;
+    private readonly INamePlateGui namePlateGui;
+    private readonly ITextureProvider textureProvider;
     private readonly Configuration config;
     private readonly IPluginLog log;
+
+    // GameObjectId -> current nameplate marker icon ID (MSQ/side quest/etc.), refreshed
+    // every time the game updates nameplate data. 0/absent = no active marker.
+    private readonly Dictionary<ulong, int> npcMarkerIcons = new();
 
     private static readonly (float Deg, string Label, bool IsMajor)[] Directions =
     [
@@ -39,14 +48,39 @@ public sealed class CompassHud
         IClientState clientState,
         IObjectTable objectTable,
         ITargetManager targetManager,
+        INamePlateGui namePlateGui,
+        ITextureProvider textureProvider,
         Configuration config,
         IPluginLog log)
     {
-        this.clientState    = clientState;
-        this.objectTable    = objectTable;
-        this.targetManager  = targetManager;
-        this.config         = config;
-        this.log            = log;
+        this.clientState     = clientState;
+        this.objectTable     = objectTable;
+        this.targetManager   = targetManager;
+        this.namePlateGui    = namePlateGui;
+        this.textureProvider = textureProvider;
+        this.config          = config;
+        this.log             = log;
+
+        // OnDataUpdate (not OnNamePlateUpdate) is the one that fires every frame with
+        // ALL current nameplates, not just ones that changed — exactly what we need to
+        // keep a complete, accurate icon cache rather than only tracking deltas.
+        this.namePlateGui.OnDataUpdate += OnNamePlateDataUpdate;
+    }
+
+    public void Dispose()
+    {
+        namePlateGui.OnDataUpdate -= OnNamePlateDataUpdate;
+    }
+
+    private void OnNamePlateDataUpdate(
+        INamePlateUpdateContext context, IReadOnlyList<INamePlateUpdateHandler> handlers)
+    {
+        npcMarkerIcons.Clear();
+        foreach (var h in handlers)
+        {
+            if (h.MarkerIconId > 0)
+                npcMarkerIcons[h.GameObjectId] = h.MarkerIconId;
+        }
     }
 
     // ── Public entry ─────────────────────────────────────────────────────────
@@ -348,6 +382,11 @@ public sealed class CompassHud
             float dist = MathF.Sqrt(dsq);
             float t    = 1f - dist / config.MaxMarkerDistance;   // 1 = close, 0 = at max range
             float r    = 3f + 7f * t;
+            // Same proximity factor drives the quest icon's size, just mapped onto a much
+            // larger min/max range — a tiny dot can shrink to nothing at range, but an
+            // icon needs to stay legible even at max distance.
+            float iconSize = config.NpcQuestIconMinSize
+                            + (config.NpcQuestIconMaxSize - config.NpcQuestIconMinSize) * t;
 
             // Three-zone alpha curve:
             //  t > nearZone              → fully opaque
@@ -374,9 +413,47 @@ public sealed class CompassHud
                 alpha = midAlpha * sm;
             }
 
-            dl.AddCircleFilled(V(sx, cy), r, WithAlpha(col, alpha));
-            dl.AddCircle(V(sx, cy), r + 0.8f, WithAlpha(0x66000000u, alpha));
+            // EventNpcs with an active quest marker get the actual game icon (the same
+            // one shown above their head) instead of a plain dot, if the feature is on.
+            bool drewIcon = false;
+            if (config.ShowNpcQuestIcons
+                && obj.ObjectKind == ObjectKind.EventNpc
+                && npcMarkerIcons.TryGetValue(obj.GameObjectId, out int iconId))
+            {
+                drewIcon = TryDrawQuestIcon(dl, iconId, sx, cy, iconSize, alpha);
+            }
+
+            if (!drewIcon)
+            {
+                dl.AddCircleFilled(V(sx, cy), r, WithAlpha(col, alpha));
+                dl.AddCircle(V(sx, cy), r + 0.8f, WithAlpha(0x66000000u, alpha));
+            }
         }
+    }
+
+    /// <summary>
+    /// Draws the actual game icon for a nameplate marker (MSQ, side quest "!", blue quest,
+    /// in-progress "?", etc.) centred at the given screen position. Returns false (caller
+    /// should fall back to the normal dot) if the texture isn't available this frame.
+    /// </summary>
+    private bool TryDrawQuestIcon(ImDrawListPtr dl, int iconId, float sx, float cy, float size, float alpha)
+    {
+        if (!textureProvider.TryGetFromGameIcon(new GameIconLookup((uint)iconId), out var sharedTex))
+            return false;
+
+        var tex = sharedTex.GetWrapOrEmpty();
+
+        float half = size * 0.5f;
+        uint  tint = WithAlpha(0xFFFFFFFFu, alpha);
+
+        dl.AddImage(
+            tex.Handle,
+            V(sx - half, cy - half),
+            V(sx + half, cy + half),
+            Vector2.Zero,
+            Vector2.One,
+            tint);
+        return true;
     }
 
     private uint MarkerColor(IGameObject obj, IPlayerCharacter player)

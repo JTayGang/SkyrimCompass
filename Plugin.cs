@@ -25,6 +25,8 @@ public sealed class Plugin : IDalamudPlugin
         IClientState clientState,
         IObjectTable objectTable,
         ITargetManager targetManager,
+        INamePlateGui namePlateGui,
+        ITextureProvider textureProvider,
         IPluginLog pluginLog)
     {
         PluginInterface = pluginInterface;
@@ -33,7 +35,8 @@ public sealed class Plugin : IDalamudPlugin
 
         Config = pluginInterface.GetPluginConfig() as Configuration ?? new Configuration();
 
-        compassHud = new CompassHud(clientState, objectTable, targetManager, Config, pluginLog);
+        compassHud = new CompassHud(
+            clientState, objectTable, targetManager, namePlateGui, textureProvider, Config, pluginLog);
         configWindow = new ConfigWindow(this);
 
         windowSystem.AddWindow(configWindow);
@@ -53,6 +56,7 @@ public sealed class Plugin : IDalamudPlugin
         commandManager.RemoveHandler(CommandName);
         PluginInterface.UiBuilder.Draw -= OnDraw;
         PluginInterface.UiBuilder.OpenConfigUi -= OnOpenConfig;
+        compassHud.Dispose();
     }
 
     private void OnCommand(string command, string args)
