@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Numerics;
+using Dalamud.Game.ClientState.Fates;
 using Dalamud.Game.ClientState.Objects.Enums;
 using Dalamud.Game.ClientState.Objects.SubKinds;
 using Dalamud.Game.ClientState.Objects.Types;
@@ -25,6 +26,7 @@ public sealed class CompassHud : IDisposable
     private readonly ITargetManager targetManager;
     private readonly INamePlateGui namePlateGui;
     private readonly ITextureProvider textureProvider;
+    private readonly IFateTable fateTable;
     private readonly Configuration config;
     private readonly IPluginLog log;
 
@@ -50,6 +52,7 @@ public sealed class CompassHud : IDisposable
         ITargetManager targetManager,
         INamePlateGui namePlateGui,
         ITextureProvider textureProvider,
+        IFateTable fateTable,
         Configuration config,
         IPluginLog log)
     {
@@ -58,6 +61,7 @@ public sealed class CompassHud : IDisposable
         this.targetManager   = targetManager;
         this.namePlateGui    = namePlateGui;
         this.textureProvider = textureProvider;
+        this.fateTable       = fateTable;
         this.config          = config;
         this.log             = log;
 
@@ -297,6 +301,10 @@ public sealed class CompassHud : IDisposable
         if (config.ShowAnyMarkers)
             RenderMarkers(dl, cx, cy, halfVis, barHalfW, lensStr, heading, player, originPos);
 
+        // Deliberately NOT gated behind ShowAnyMarkers — FATEs are independent of every
+        // other marker toggle, so this needs to work even with all of them off.
+        RenderFates(dl, cx, cy, halfVis, barHalfW, lensStr, heading, originPos);
+
         dl.PopClipRect();
 
         // ── 6. Bar border ─────────────────────────────────────────────────────
@@ -388,30 +396,8 @@ public sealed class CompassHud : IDisposable
             float iconSize = config.NpcQuestIconMinSize
                             + (config.NpcQuestIconMaxSize - config.NpcQuestIconMinSize) * t;
 
-            // Three-zone alpha curve:
-            //  t > nearZone              → fully opaque
-            //  farZone < t ≤ nearZone    → smoothstep from 1.0 → midAlpha
-            //  0 < t ≤ farZone           → smoothstep from midAlpha → 0
-            float nearZone = config.DotNearZone;
-            float midEnd   = config.DotFarZone;
-            float midAlpha = config.DotMidAlpha;
-            float alpha;
-            if (t >= nearZone)
-            {
-                alpha = 1f;
-            }
-            else if (t >= midEnd)
-            {
-                float u = (t - midEnd) / (nearZone - midEnd);
-                float sm = u * u * (3f - 2f * u);
-                alpha = midAlpha + (1f - midAlpha) * sm;
-            }
-            else
-            {
-                float u = t / midEnd;
-                float sm = u * u * (3f - 2f * u);
-                alpha = midAlpha * sm;
-            }
+            // Three-zone alpha curve, shared with RenderFates — see ComputeFadeAlpha.
+            float alpha = ComputeFadeAlpha(t);
 
             // EventNpcs with an active quest marker get the actual game icon (the same
             // one shown above their head) instead of a plain dot, if the feature is on.
@@ -420,7 +406,7 @@ public sealed class CompassHud : IDisposable
                 && obj.ObjectKind == ObjectKind.EventNpc
                 && npcMarkerIcons.TryGetValue(obj.GameObjectId, out int iconId))
             {
-                drewIcon = TryDrawQuestIcon(dl, iconId, sx, cy, iconSize, alpha);
+                drewIcon = TryDrawIcon(dl, iconId, sx, cy, iconSize, alpha);
             }
 
             if (!drewIcon)
@@ -432,11 +418,92 @@ public sealed class CompassHud : IDisposable
     }
 
     /// <summary>
-    /// Draws the actual game icon for a nameplate marker (MSQ, side quest "!", blue quest,
-    /// in-progress "?", etc.) centred at the given screen position. Returns false (caller
-    /// should fall back to the normal dot) if the texture isn't available this frame.
+    /// Three-zone distance-fade curve shared by all marker types (regular dots, NPC quest
+    /// icons, and FATEs): fully opaque while closer than <see cref="Configuration.DotNearZone"/>,
+    /// smoothstep down to <see cref="Configuration.DotMidAlpha"/> through the middle band,
+    /// then smoothstep down to fully invisible by <see cref="Configuration.DotFarZone"/>.
+    /// <paramref name="t"/> is 1 at zero distance and 0 at the relevant max range.
     /// </summary>
-    private bool TryDrawQuestIcon(ImDrawListPtr dl, int iconId, float sx, float cy, float size, float alpha)
+    private float ComputeFadeAlpha(float t)
+    {
+        float nearZone = config.DotNearZone;
+        float midEnd   = config.DotFarZone;
+        float midAlpha = config.DotMidAlpha;
+
+        if (t >= nearZone) return 1f;
+
+        if (t >= midEnd)
+        {
+            float u  = (t - midEnd) / (nearZone - midEnd);
+            float sm = u * u * (3f - 2f * u);
+            return midAlpha + (1f - midAlpha) * sm;
+        }
+
+        float uu = t / midEnd;
+        float ss = uu * uu * (3f - 2f * uu);
+        return midAlpha * ss;
+    }
+
+    /// <summary>
+    /// Renders active FATEs as their real game icon (falling back to a plain dot if the
+    /// texture isn't available). Deliberately independent of every other marker toggle —
+    /// see <see cref="Configuration.ShowFates"/>.
+    /// </summary>
+    private void RenderFates(
+        ImDrawListPtr dl,
+        float cx, float cy,
+        float halfVis, float barHalfW, float lensStr,
+        float heading, Vector3 originPos)
+    {
+        if (!config.ShowFates) return;
+
+        float maxDistSq = config.MaxFateDistance * config.MaxFateDistance;
+        float extHalf   = halfVis * lensStr;
+
+        foreach (var fate in fateTable)
+        {
+            if (fate == null) continue;
+            // Only show FATEs that are actually happening or about to happen — an Ending,
+            // Ended, or Failed FATE isn't something worth navigating toward.
+            if (fate.State != FateState.Running && fate.State != FateState.Preparing)
+                continue;
+
+            float dx  = fate.Position.X - originPos.X;
+            float dy  = fate.Position.Y - originPos.Y;
+            float dz  = fate.Position.Z - originPos.Z;
+            float dsq = dx * dx + dy * dy + dz * dz;
+
+            if (dsq > maxDistSq || dsq < 0.25f) continue;
+
+            float bearing = Normalize(MathF.Atan2(dx, -dz) * (180f / MathF.PI));
+            float delta   = Delta(heading, bearing);
+            if (MathF.Abs(delta) > extHalf) continue;
+
+            float sx = cx + Project(delta, halfVis, barHalfW, lensStr);
+
+            float dist = MathF.Sqrt(dsq);
+            float t    = 1f - dist / config.MaxFateDistance;   // 1 = close, 0 = at max range
+            float iconSize = config.FateIconMinSize + (config.FateIconMaxSize - config.FateIconMinSize) * t;
+            float alpha     = ComputeFadeAlpha(t);
+
+            bool drewIcon = fate.IconId > 0 && TryDrawIcon(dl, (int)fate.IconId, sx, cy, iconSize, alpha);
+
+            if (!drewIcon)
+            {
+                float r = 3f + 7f * t;
+                dl.AddCircleFilled(V(sx, cy), r, WithAlpha(C(config.FateColor), alpha));
+                dl.AddCircle(V(sx, cy), r + 0.8f, WithAlpha(0x66000000u, alpha));
+            }
+        }
+    }
+
+    /// <summary>
+    /// Draws a real game icon (looked up by its game icon ID — works for nameplate
+    /// marker icons, FATE icons, anything ITextureProvider can resolve) centred at the
+    /// given screen position. Returns false (caller should fall back to a plain dot) if
+    /// the texture isn't available this frame.
+    /// </summary>
+    private bool TryDrawIcon(ImDrawListPtr dl, int iconId, float sx, float cy, float size, float alpha)
     {
         if (!textureProvider.TryGetFromGameIcon(new GameIconLookup((uint)iconId), out var sharedTex))
             return false;

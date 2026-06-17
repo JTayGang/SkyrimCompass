@@ -295,6 +295,44 @@ public sealed class ConfigWindow : Window
                 "Opacity of dots in the middle distance band.\n" +
                 "0.5 = 50%% visible.  0.0 = invisible in mid-range.  1.0 = fully opaque.");
 
+        ImGui.Spacing();
+        ImGui.Separator();
+        ImGui.Spacing();
+        ImGui.TextDisabled("FATEs (independent of all toggles above)");
+
+        bool fateB = cfg.ShowFates; Vector4 fateC = cfg.FateColor;
+        if (ImGui.Checkbox("##fates_en", ref fateB))      { cfg.ShowFates = fateB;  changed = true; }
+        ImGui.SameLine();
+        if (ImGui.ColorEdit4("Show FATEs##fates_c", ref fateC, ColorPickerFlags)) { cfg.FateColor = fateC; changed = true; }
+        if (ImGui.IsItemHovered())
+            ImGui.SetTooltip(
+                "Shows active or about-to-start FATEs using their real game icon.\n" +
+                "The colour here is only a fallback dot, used if the icon texture\n" +
+                "hasn't loaded yet. Works even with every marker category above off —\n" +
+                "FATEs are a separate kind of point of interest, not \"an enemy\".");
+
+        ImGui.Indent();
+        ImGui.BeginDisabled(!fateB);
+
+        float fateDist = cfg.MaxFateDistance;
+        if (ImGui.SliderFloat("Detection range (yalms)##fatedist", ref fateDist, 30f, 400f))
+        { cfg.MaxFateDistance = fateDist; changed = true; }
+        if (ImGui.IsItemHovered())
+            ImGui.SetTooltip(
+                "Much larger by default than the other markers' range — FATEs are\n" +
+                "meant to be discoverable from well outside normal combat awareness.");
+
+        float fateMin = cfg.FateIconMinSize;
+        if (ImGui.SliderFloat("Min icon size (far away)##fatemin", ref fateMin, 8f, 50f))
+        { cfg.FateIconMinSize = fateMin; changed = true; }
+
+        float fateMax = cfg.FateIconMaxSize;
+        if (ImGui.SliderFloat("Max icon size (close up)##fatemax", ref fateMax, 8f, 64f))
+        { cfg.FateIconMaxSize = fateMax; changed = true; }
+
+        ImGui.EndDisabled();
+        ImGui.Unindent();
+
         ImGui.EndTabItem();
         return changed;
     }

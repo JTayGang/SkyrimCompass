@@ -108,6 +108,25 @@ public class Configuration : IPluginConfiguration
     public Vector4 GatheringColor{ get; set; } = new(0.30f, 0.92f, 0.40f, 0.92f);
     public Vector4 TreasureColor { get; set; } = new(1.00f, 0.80f, 0.15f, 0.95f);
 
+    // ── FATEs ────────────────────────────────────────────────────────────────
+    // Deliberately independent of every toggle above and of ShowAnyMarkers below —
+    // FATEs are a zone-wide point of interest, not "an enemy you're fighting", so
+    // people often want this on even with every other marker category off.
+    /// <summary>Shows active (Running/Preparation) FATEs on the compass.</summary>
+    public bool ShowFates { get; set; } = true;
+    /// <summary>Fallback dot color, only used if the FATE's real icon texture fails to load.</summary>
+    public Vector4 FateColor { get; set; } = new(0.82f, 0.35f, 0.95f, 0.95f);
+    /// <summary>
+    /// Max FATE detection range in yalms (3D, same as <see cref="MaxMarkerDistance"/>).
+    /// Deliberately much larger by default — FATEs are meant to be discoverable from
+    /// well outside normal combat/NPC awareness range.
+    /// </summary>
+    public float MaxFateDistance { get; set; } = 150f;
+    /// <summary>FATE icon pixel diameter at maximum detection range.</summary>
+    public float FateIconMinSize { get; set; } = 8f;
+    /// <summary>FATE icon pixel diameter when very close.</summary>
+    public float FateIconMaxSize { get; set; } = 40f;
+
     /// <summary>True if at least one marker type is enabled (used to skip the object-table loop).</summary>
     public bool ShowAnyMarkers =>
         ShowPlayers || ShowEnemies || ShowNpcs || ShowGatheringNodes || ShowTreasure;

@@ -27,6 +27,7 @@ public sealed class Plugin : IDalamudPlugin
         ITargetManager targetManager,
         INamePlateGui namePlateGui,
         ITextureProvider textureProvider,
+        IFateTable fateTable,
         IPluginLog pluginLog)
     {
         PluginInterface = pluginInterface;
@@ -36,7 +37,7 @@ public sealed class Plugin : IDalamudPlugin
         Config = pluginInterface.GetPluginConfig() as Configuration ?? new Configuration();
 
         compassHud = new CompassHud(
-            clientState, objectTable, targetManager, namePlateGui, textureProvider, Config, pluginLog);
+            clientState, objectTable, targetManager, namePlateGui, textureProvider, fateTable, Config, pluginLog);
         configWindow = new ConfigWindow(this);
 
         windowSystem.AddWindow(configWindow);

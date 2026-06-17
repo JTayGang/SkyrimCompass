@@ -17,6 +17,6 @@
       read the AssemblyVersion field in SkyrimCompass.json, so editing that
       file by hand has no effect. This is the one and only place that matters.
     -->
-    <Version>1.0.7.0</Version>
+    <Version>1.0.9.0</Version>
   </PropertyGroup>
 </Project>
