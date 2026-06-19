@@ -28,6 +28,7 @@ public sealed class Plugin : IDalamudPlugin
         INamePlateGui namePlateGui,
         ITextureProvider textureProvider,
         IFateTable fateTable,
+        IDataManager dataManager,
         IPluginLog pluginLog)
     {
         PluginInterface = pluginInterface;
@@ -37,14 +38,16 @@ public sealed class Plugin : IDalamudPlugin
         Config = pluginInterface.GetPluginConfig() as Configuration ?? new Configuration();
 
         compassHud = new CompassHud(
-            clientState, objectTable, targetManager, namePlateGui, textureProvider, fateTable, Config, pluginLog);
+            clientState, objectTable, targetManager, namePlateGui, textureProvider, fateTable,
+            dataManager, Config, pluginLog);
         configWindow = new ConfigWindow(this);
 
         windowSystem.AddWindow(configWindow);
 
         commandManager.AddHandler(CommandName, new CommandInfo(OnCommand)
         {
-            HelpMessage = "Toggle the compass overlay. Use '/compass config' to open settings."
+            HelpMessage = "Toggle the compass. '/compass config' for settings, " +
+                          "'/compass debug' to log nearby objects (then /xllog to view)."
         });
 
         pluginInterface.UiBuilder.Draw += OnDraw;
@@ -62,8 +65,11 @@ public sealed class Plugin : IDalamudPlugin
 
     private void OnCommand(string command, string args)
     {
-        if (args.Trim().Equals("config", StringComparison.OrdinalIgnoreCase))
+        var trimmed = args.Trim();
+        if (trimmed.Equals("config", StringComparison.OrdinalIgnoreCase))
             configWindow.IsOpen = !configWindow.IsOpen;
+        else if (trimmed.Equals("debug", StringComparison.OrdinalIgnoreCase))
+            compassHud.DumpNearbyObjects();
         else
         {
             Config.Enabled = !Config.Enabled;

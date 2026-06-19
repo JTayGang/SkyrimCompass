@@ -11,6 +11,8 @@ using Dalamud.Plugin.Services;
 using Dalamud.Bindings.ImGui;
 using FFXIVClientStructs.FFXIV.Client.Game;
 using FFXIVClientStructs.FFXIV.Client.Game.Control;
+using Lumina.Excel;
+using Lumina.Excel.Sheets;
 
 namespace SkyrimCompass;
 
@@ -34,6 +36,14 @@ public sealed class CompassHud : IDisposable
     // every time the game updates nameplate data. 0/absent = no active marker.
     private readonly Dictionary<ulong, int> npcMarkerIcons = new();
 
+    // BaseId -> resolved Mining/Botany (etc.) icon ID. Unlike npcMarkerIcons this never
+    // needs refreshing — a gathering node's type is static game data, not state that
+    // changes during play — so it's cached permanently once resolved.
+    private readonly Dictionary<uint, int> gatheringIconCache = new();
+    private readonly ExcelSheet<GatheringPoint> gatheringPointSheet;
+    private readonly ExcelSheet<GatheringPointBase> gatheringPointBaseSheet;
+    private readonly ExcelSheet<GatheringType> gatheringTypeSheet;
+
     private static readonly (float Deg, string Label, bool IsMajor)[] Directions =
     [
         (0f,   "N",  true),
@@ -53,6 +63,7 @@ public sealed class CompassHud : IDisposable
         INamePlateGui namePlateGui,
         ITextureProvider textureProvider,
         IFateTable fateTable,
+        IDataManager dataManager,
         Configuration config,
         IPluginLog log)
     {
@@ -64,6 +75,10 @@ public sealed class CompassHud : IDisposable
         this.fateTable       = fateTable;
         this.config          = config;
         this.log             = log;
+
+        gatheringPointSheet     = dataManager.GetExcelSheet<GatheringPoint>();
+        gatheringPointBaseSheet = dataManager.GetExcelSheet<GatheringPointBase>();
+        gatheringTypeSheet      = dataManager.GetExcelSheet<GatheringType>();
 
         // OnDataUpdate (not OnNamePlateUpdate) is the one that fires every frame with
         // ALL current nameplates, not just ones that changed — exactly what we need to
@@ -390,24 +405,46 @@ public sealed class CompassHud : IDisposable
             float dist = MathF.Sqrt(dsq);
             float t    = 1f - dist / config.MaxMarkerDistance;   // 1 = close, 0 = at max range
             float r    = 3f + 7f * t;
-            // Same proximity factor drives the quest icon's size, just mapped onto a much
-            // larger min/max range — a tiny dot can shrink to nothing at range, but an
-            // icon needs to stay legible even at max distance.
-            float iconSize = config.NpcQuestIconMinSize
-                            + (config.NpcQuestIconMaxSize - config.NpcQuestIconMinSize) * t;
 
             // Three-zone alpha curve, shared with RenderFates — see ComputeFadeAlpha.
             float alpha = ComputeFadeAlpha(t);
 
-            // EventNpcs with an active quest marker get the actual game icon (the same
-            // one shown above their head) instead of a plain dot, if the feature is on.
-            bool drewIcon = false;
-            if (config.ShowNpcQuestIcons
-                && obj.ObjectKind == ObjectKind.EventNpc
-                && npcMarkerIcons.TryGetValue(obj.GameObjectId, out int iconId))
+            // Categories with a real game icon available get that instead of a plain
+            // dot — the icon ID and its min/max size range both depend on which
+            // category this is, so each is resolved here before the shared draw call.
+            int   iconId   = 0;
+            float iconSize = 0f;
+
+            bool isAetheryteKind = obj.ObjectKind == ObjectKind.Aetheryte
+                || ((obj.ObjectKind == ObjectKind.EventNpc || obj.ObjectKind == ObjectKind.EventObj)
+                    && IsAetheryteLikeName(obj.Name.TextValue));
+
+            if (config.ShowAetheryteIcons && isAetheryteKind)
             {
-                drewIcon = TryDrawIcon(dl, iconId, sx, cy, iconSize, alpha);
+                iconId   = GetAetheryteIconId(obj);
+                iconSize = config.AetheryteIconMinSize
+                         + (config.AetheryteIconMaxSize - config.AetheryteIconMinSize) * t;
             }
+            else if (config.ShowNpcQuestIcons
+                && obj.ObjectKind == ObjectKind.EventNpc
+                && npcMarkerIcons.TryGetValue(obj.GameObjectId, out int npcIcon))
+            {
+                iconId   = npcIcon;
+                iconSize = config.NpcQuestIconMinSize
+                         + (config.NpcQuestIconMaxSize - config.NpcQuestIconMinSize) * t;
+            }
+            else if (config.ShowGatheringIcons && obj.ObjectKind == ObjectKind.GatheringPoint)
+            {
+                int gatherIcon = GetGatheringIconId(obj.BaseId);
+                if (gatherIcon > 0)
+                {
+                    iconId   = gatherIcon;
+                    iconSize = config.GatheringIconMinSize
+                             + (config.GatheringIconMaxSize - config.GatheringIconMinSize) * t;
+                }
+            }
+
+            bool drewIcon = iconId > 0 && TryDrawIcon(dl, iconId, sx, cy, iconSize, alpha);
 
             if (!drewIcon)
             {
@@ -523,6 +560,79 @@ public sealed class CompassHud : IDisposable
         return true;
     }
 
+    /// <summary>
+    /// Resolves the real Mining/Botany (etc.) icon ID for a gathering node, by chasing
+    /// the chain GatheringPoint(BaseId) → GatheringPointBase → GatheringType → IconMain.
+    /// Cached permanently per BaseId since this is static game data. Returns 0 if any
+    /// link in the chain doesn't resolve.
+    /// </summary>
+    private int GetGatheringIconId(uint baseId)
+    {
+        if (gatheringIconCache.TryGetValue(baseId, out int cached))
+            return cached;
+
+        int icon = 0;
+        var gpRow = gatheringPointSheet.GetRowOrDefault(baseId);
+        if (gpRow != null)
+        {
+            var gpBaseRow = gatheringPointBaseSheet.GetRowOrDefault(gpRow.Value.GatheringPointBase.RowId);
+            if (gpBaseRow != null)
+            {
+                var typeRow = gatheringTypeSheet.GetRowOrDefault(gpBaseRow.Value.GatheringType.RowId);
+                if (typeRow != null)
+                    icon = typeRow.Value.IconMain;
+            }
+        }
+
+        gatheringIconCache[baseId] = icon;
+        return icon;
+    }
+
+    /// <summary>
+    /// Resolves which aetheryte icon to use for a given live object, using the two
+    /// configurable name strings. A city's main aetheryte exactly matches
+    /// <see cref="Configuration.AetheryteBigName"/> ("Aetheryte" in English). Smaller
+    /// Aethernet shard waypoints contain <see cref="Configuration.AethernetShardName"/>
+    /// ("Aethernet") as a substring — that single string catches every city variant
+    /// ("Ul'dah Aethernet Shard", "Limsa Lominsa Aethernet Shard", etc.).
+    /// </summary>
+    private int GetAetheryteIconId(IGameObject obj)
+    {
+        if (!config.AutoDetectAethernetShards)
+            return config.AetheryteIconId;
+
+        var name = obj.Name.TextValue;
+
+        // Exact match on the generic big-aetheryte name
+        if (string.Equals(name, config.AetheryteBigName, StringComparison.OrdinalIgnoreCase))
+            return config.AetheryteIconId;
+
+        // Substring match on the shard keyword — catches any city-prefixed shard name
+        if (!string.IsNullOrEmpty(config.AethernetShardName)
+            && name.Contains(config.AethernetShardName, StringComparison.OrdinalIgnoreCase))
+            return config.AethernetShardIconId;
+
+        // Neither matched — default to big icon rather than silently showing nothing
+        return config.AetheryteIconId;
+    }
+
+    /// <summary>
+    /// True if a name matches either the configured Big-aetheryte name (exact) or the
+    /// Aethernet-shard keyword (substring). Used to catch housing-ward and Firmament
+    /// teleport crystals, which are ObjectKind.EventNpc rather than ObjectKind.Aetheryte
+    /// — the game apparently doesn't use the "real" aetheryte object kind for those,
+    /// even though they function identically and share the same display name pattern.
+    /// </summary>
+    private bool IsAetheryteLikeName(string name)
+    {
+        if (string.Equals(name, config.AetheryteBigName, StringComparison.OrdinalIgnoreCase))
+            return true;
+        if (!string.IsNullOrEmpty(config.AethernetShardName)
+            && name.Contains(config.AethernetShardName, StringComparison.OrdinalIgnoreCase))
+            return true;
+        return false;
+    }
+
     private uint MarkerColor(IGameObject obj, IPlayerCharacter player)
     {
         switch (obj.ObjectKind)
@@ -546,13 +656,34 @@ public sealed class CompassHud : IDisposable
 
                 return C(config.EnemyColor);
             case ObjectKind.EventNpc:
+                // Firmament teleport crystals are EventNpcs that share the same
+                // "Aetheryte" / "Aethernet Shard ..." display names as real aetherytes —
+                // route those through the aetheryte toggle/colour instead of the NPC one,
+                // completely independent of ShowNpcs.
+                if (IsAetheryteLikeName(obj.Name.TextValue))
+                    return config.ShowAetherytes ? C(config.AetheryteColor) : 0u;
+
                 if (!config.ShowNpcs) return 0u;
                 if (config.NpcsOnlyIfTargetable && !obj.IsTargetable) return 0u;
                 return C(config.NpcColor);
+            case ObjectKind.EventObj:
+                // Confirmed via /compass debug: housing-ward Aethernet shards are
+                // ObjectKind.EventObj (not EventNpc, and not HousingEventObject either
+                // — an earlier guess that didn't pan out). We don't track any other
+                // kind of EventObj on the compass, so this case exists purely for the
+                // aetheryte check; anything that doesn't match falls through to nothing
+                // rather than some other fallback category.
+                if (IsAetheryteLikeName(obj.Name.TextValue))
+                    return config.ShowAetherytes ? C(config.AetheryteColor) : 0u;
+                return 0u;
             case ObjectKind.GatheringPoint:
-                return config.ShowGatheringNodes ? C(config.GatheringColor) : 0u;
+                if (!config.ShowGatheringNodes) return 0u;
+                if (config.GatheringOnlyIfTargetable && !obj.IsTargetable) return 0u;
+                return C(config.GatheringColor);
             case ObjectKind.Treasure:
                 return config.ShowTreasure ? C(config.TreasureColor) : 0u;
+            case ObjectKind.Aetheryte:
+                return config.ShowAetherytes ? C(config.AetheryteColor) : 0u;
             default:
                 return 0u;
         }
@@ -597,5 +728,49 @@ public sealed class CompassHud : IDisposable
         uint origA = (color >> 24) & 0xFFu;
         uint newA  = (uint)(origA * MathF.Min(1f, MathF.Max(0f, mul)));
         return (color & 0x00FFFFFFu) | (newA << 24);
+    }
+
+    /// <summary>
+    /// Logs every object within <paramref name="radius"/> yalms of the player to
+    /// Dalamud's log — real ObjectKind, BaseId, name, targetable state, distance.
+    /// Exists purely as a diagnostic: when a marker category isn't appearing and the
+    /// reason isn't obvious, this turns "guess the ObjectKind" into "read it directly
+    /// off the actual game client" instead. View results with the in-game /xllog
+    /// command, or in the Dalamud console window.
+    /// </summary>
+    public void DumpNearbyObjects(float radius = 50f)
+    {
+        var player = objectTable.LocalPlayer;
+        if (player == null)
+        {
+            log.Info("[SkyrimCompass debug] No local player — are you logged in?");
+            return;
+        }
+
+        var pp = player.Position;
+        var nearby = new List<(float dist, IGameObject obj)>();
+
+        foreach (var obj in objectTable)
+        {
+            if (obj == null || obj.EntityId == player.EntityId) continue;
+            float dx = obj.Position.X - pp.X;
+            float dy = obj.Position.Y - pp.Y;
+            float dz = obj.Position.Z - pp.Z;
+            float dist = MathF.Sqrt(dx * dx + dy * dy + dz * dz);
+            if (dist <= radius)
+                nearby.Add((dist, obj));
+        }
+
+        nearby.Sort((a, b) => a.dist.CompareTo(b.dist));
+
+        log.Info($"[SkyrimCompass debug] {nearby.Count} object(s) within {radius}y — nearest first:");
+        foreach (var (dist, obj) in nearby)
+        {
+            log.Info(
+                $"[SkyrimCompass debug] {dist,6:F1}y | Kind={obj.ObjectKind,-19} | " +
+                $"BaseId={obj.BaseId,-8} | Targetable={obj.IsTargetable,-5} | " +
+                $"Name=\"{obj.Name.TextValue}\"");
+        }
+        log.Info("[SkyrimCompass debug] Done. Use /xllog in-game to view the log window.");
     }
 }

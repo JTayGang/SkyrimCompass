@@ -253,10 +253,104 @@ public sealed class ConfigWindow : Window
         ImGui.SameLine();
         if (ImGui.ColorEdit4("Gathering Nodes##gath_c", ref c, ColorPickerFlags)) { cfg.GatheringColor = c; changed = true; }
 
+        ImGui.Indent();
+        ImGui.BeginDisabled(!cfg.ShowGatheringNodes);
+        bool gTgt = cfg.GatheringOnlyIfTargetable;
+        if (ImGui.Checkbox("Hide non-targetable \"ghost\" nodes##gtgt", ref gTgt))
+        { cfg.GatheringOnlyIfTargetable = gTgt; changed = true; }
+        if (ImGui.IsItemHovered())
+            ImGui.SetTooltip(
+                "Filters out depleted or not-yet-spawned gathering nodes that the game\n" +
+                "keeps in its object table even when nothing is currently interactable\n" +
+                "there. Recommended to leave this on.");
+
+        bool gIcon = cfg.ShowGatheringIcons;
+        if (ImGui.Checkbox("Show real Mining/Botany icons##gicon", ref gIcon))
+        { cfg.ShowGatheringIcons = gIcon; changed = true; }
+        if (ImGui.IsItemHovered())
+            ImGui.SetTooltip(
+                "Shows the node's actual Mining/Quarrying/Logging/Botany game icon\n" +
+                "instead of a plain dot.");
+
+        ImGui.BeginDisabled(!gIcon);
+        ImGui.Indent();
+        float gMin = cfg.GatheringIconMinSize;
+        if (ImGui.SliderFloat("Min size (far away)##gmin", ref gMin, 8f, 50f))
+        { cfg.GatheringIconMinSize = gMin; changed = true; }
+        float gMax = cfg.GatheringIconMaxSize;
+        if (ImGui.SliderFloat("Max size (close up)##gmax", ref gMax, 8f, 60f))
+        { cfg.GatheringIconMaxSize = gMax; changed = true; }
+        ImGui.Unindent();
+        ImGui.EndDisabled();
+
+        ImGui.EndDisabled();
+        ImGui.Unindent();
+        ImGui.Spacing();
+
         b = cfg.ShowTreasure;  c = cfg.TreasureColor;
         if (ImGui.Checkbox("##tres_en", ref b))           { cfg.ShowTreasure = b;       changed = true; }
         ImGui.SameLine();
         if (ImGui.ColorEdit4("Treasure##tres_c", ref c, ColorPickerFlags))   { cfg.TreasureColor = c; changed = true; }
+
+        b = cfg.ShowAetherytes; c = cfg.AetheryteColor;
+        if (ImGui.Checkbox("##aeth_en", ref b))           { cfg.ShowAetherytes = b;     changed = true; }
+        ImGui.SameLine();
+        if (ImGui.ColorEdit4("Aetherytes##aeth_c", ref c, ColorPickerFlags)) { cfg.AetheryteColor = c; changed = true; }
+
+        ImGui.Indent();
+        ImGui.BeginDisabled(!cfg.ShowAetherytes);
+        bool aIcon = cfg.ShowAetheryteIcons;
+        if (ImGui.Checkbox("Show real aetheryte icon##aicon", ref aIcon))
+        { cfg.ShowAetheryteIcons = aIcon; changed = true; }
+        if (ImGui.IsItemHovered())
+            ImGui.SetTooltip(
+                "The icon ID numbers below are confirmed against a reference plugin's\n" +
+                "icon table. Falls back to the colour dot above only if an ID somehow\n" +
+                "doesn't resolve to a loadable texture.");
+
+        ImGui.BeginDisabled(!aIcon);
+        ImGui.Indent();
+
+        bool autoShard = cfg.AutoDetectAethernetShards;
+        if (ImGui.Checkbox("Use separate icon for Aethernet shards##autoshard", ref autoShard))
+        { cfg.AutoDetectAethernetShards = autoShard; changed = true; }
+        if (ImGui.IsItemHovered())
+            ImGui.SetTooltip(
+                "Tells city main aetherytes apart from smaller Aethernet shard waypoints\n" +
+                "by checking the object's displayed name: a main aetheryte is just named\n" +
+                "\"Aetheryte\" (the generic category name) while shards show their specific\n" +
+                "sub-location name. Turn off to use the Big icon for all of them.");
+
+        string bigName = cfg.AetheryteBigName;
+        if (ImGui.InputText("Main aetheryte name##bigname", ref bigName, 64))
+        { cfg.AetheryteBigName = bigName; changed = true; }
+        if (ImGui.IsItemHovered())
+            ImGui.SetTooltip(
+                "The exact displayed name a city's main aetheryte uses in your game\n" +
+                "language. Default \"Aetheryte\" is correct for English clients.");
+
+        ImGui.BeginDisabled(!autoShard);
+        string shardName = cfg.AethernetShardName;
+        if (ImGui.InputText("Aethernet shard name##shardname", ref shardName, 64))
+        { cfg.AethernetShardName = shardName; changed = true; }
+        if (ImGui.IsItemHovered())
+            ImGui.SetTooltip(
+                "A word that appears in every Aethernet shard's name in your game\n" +
+                "language. Matched as a substring, so \"Aethernet\" catches \"Ul'dah\n" +
+                "Aethernet Shard\", \"Limsa Lominsa Aethernet Shard\", etc. all at once.");
+        ImGui.EndDisabled();
+
+        float aMin = cfg.AetheryteIconMinSize;
+        if (ImGui.SliderFloat("Min size (far away)##amin", ref aMin, 8f, 50f))
+        { cfg.AetheryteIconMinSize = aMin; changed = true; }
+        float aMax = cfg.AetheryteIconMaxSize;
+        if (ImGui.SliderFloat("Max size (close up)##amax", ref aMax, 8f, 60f))
+        { cfg.AetheryteIconMaxSize = aMax; changed = true; }
+        ImGui.Unindent();
+        ImGui.EndDisabled();
+
+        ImGui.EndDisabled();
+        ImGui.Unindent();
 
         ImGui.Spacing();
         ImGui.TextDisabled("Maximum detection distance (straight-line, includes height):");
