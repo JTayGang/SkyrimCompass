@@ -1,11 +1,11 @@
 {
-    "Author": "Meowmeowmeow Cat",
+    "Author": "JTayGang",
     "Name": "Skyrim Compass",
     "Punchline": "Navigate Eorzea like a Dragonborn",
     "Description": "Adds a Skyrim-style compass bar at the top of your screen. Shows cardinal directions, tick marks, and nearby entity markers (players, enemies, gathering nodes, and more). Use /compass to toggle and /compass config to open settings.",
     "Tags": [ "compass", "hud", "navigation", "minimap", "skyrim" ],
     "InternalName": "SkyrimCompass",
-    "AssemblyVersion": "1.0.19.0",
+    "AssemblyVersion": "1.0.23.0",
     "ApplicableVersion": "any",
     "DalamudApiLevel": 15,
     "RepoUrl": "https://github.com/JTayGang/SkyrimCompass",

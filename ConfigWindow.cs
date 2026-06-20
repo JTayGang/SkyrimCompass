@@ -56,24 +56,25 @@ public sealed class ConfigWindow : Window
         bool changed = false;
 
         float v;
+        int   iv;
 
-        v = cfg.CompassWidth;
-        if (ImGui.SliderFloat("Width##w", ref v, 200f, 1400f))
-        { cfg.CompassWidth = v; changed = true; }
+        iv = (int)cfg.CompassWidth;
+        if (ImGui.SliderInt("Width##w", ref iv, 200, 1400))
+        { cfg.CompassWidth = iv; changed = true; }
 
-        v = cfg.CompassHeight;
-        if (ImGui.SliderFloat("Height##h", ref v, 20f, 80f))
-        { cfg.CompassHeight = v; changed = true; }
+        iv = (int)cfg.CompassHeight;
+        if (ImGui.SliderInt("Height##h", ref iv, 20, 80))
+        { cfg.CompassHeight = iv; changed = true; }
 
-        v = cfg.YOffset;
-        if (ImGui.SliderFloat("Y Offset (from top)##yo", ref v, 0f, 300f))
-        { cfg.YOffset = v; changed = true; }
+        iv = (int)cfg.YOffset;
+        if (ImGui.SliderInt("Y Offset (from top)##yo", ref iv, 0, 300))
+        { cfg.YOffset = iv; changed = true; }
 
         ImGui.Spacing();
 
-        v = cfg.VisibleDegrees;
-        if (ImGui.SliderFloat("Visible Degrees##vd", ref v, 30f, 180f))
-        { cfg.VisibleDegrees = v; changed = true; }
+        iv = (int)cfg.VisibleDegrees;
+        if (ImGui.SliderInt("Visible Degrees##vd", ref iv, 30, 180))
+        { cfg.VisibleDegrees = iv; changed = true; }
         if (ImGui.IsItemHovered())
             ImGui.SetTooltip(
                 "How many degrees are visible in the LINEAR centre zone.\n" +
@@ -130,9 +131,9 @@ public sealed class ConfigWindow : Window
 
         ImGui.Spacing();
         ImGui.TextDisabled("Rotation Offset  (set to 180 if N and S are swapped)");
-        v = cfg.RotationOffset;
-        if (ImGui.SliderFloat("##rotoff", ref v, -180f, 180f))
-        { cfg.RotationOffset = v; changed = true; }
+        iv = (int)cfg.RotationOffset;
+        if (ImGui.SliderInt("##rotoff", ref iv, -180, 180))
+        { cfg.RotationOffset = iv; changed = true; }
 
         ImGui.EndTabItem();
         return changed;
@@ -235,11 +236,11 @@ public sealed class ConfigWindow : Window
 
         ImGui.BeginDisabled(!qIcon);
         ImGui.Indent();
-        float qMin = cfg.NpcQuestIconMinSize;
-        if (ImGui.SliderFloat("Min size (far away)##qmin", ref qMin, 8f, 50f))
+        int qMin = (int)cfg.NpcQuestIconMinSize;
+        if (ImGui.SliderInt("Min size (far away)##qmin", ref qMin, 8, 50))
         { cfg.NpcQuestIconMinSize = qMin; changed = true; }
-        float qMax = cfg.NpcQuestIconMaxSize;
-        if (ImGui.SliderFloat("Max size (close up)##qmax", ref qMax, 8f, 60f))
+        int qMax = (int)cfg.NpcQuestIconMaxSize;
+        if (ImGui.SliderInt("Max size (close up)##qmax", ref qMax, 8, 60))
         { cfg.NpcQuestIconMaxSize = qMax; changed = true; }
         ImGui.Unindent();
         ImGui.EndDisabled();
@@ -274,11 +275,11 @@ public sealed class ConfigWindow : Window
 
         ImGui.BeginDisabled(!gIcon);
         ImGui.Indent();
-        float gMin = cfg.GatheringIconMinSize;
-        if (ImGui.SliderFloat("Min size (far away)##gmin", ref gMin, 8f, 50f))
+        int gMin = (int)cfg.GatheringIconMinSize;
+        if (ImGui.SliderInt("Min size (far away)##gmin", ref gMin, 8, 50))
         { cfg.GatheringIconMinSize = gMin; changed = true; }
-        float gMax = cfg.GatheringIconMaxSize;
-        if (ImGui.SliderFloat("Max size (close up)##gmax", ref gMax, 8f, 60f))
+        int gMax = (int)cfg.GatheringIconMaxSize;
+        if (ImGui.SliderInt("Max size (close up)##gmax", ref gMax, 8, 60))
         { cfg.GatheringIconMaxSize = gMax; changed = true; }
         ImGui.Unindent();
         ImGui.EndDisabled();
@@ -299,37 +300,38 @@ public sealed class ConfigWindow : Window
 
         ImGui.Indent();
         ImGui.BeginDisabled(!cfg.ShowAetherytes);
+
+        bool showShards = cfg.ShowAethernetShards;
+        if (ImGui.Checkbox("Show Aethernet shards##aethshards", ref showShards))
+        { cfg.ShowAethernetShards = showShards; changed = true; }
+        if (ImGui.IsItemHovered())
+            ImGui.SetTooltip(
+                "Aethernet shards are the smaller waypoints found in housing wards,\n" +
+                "the Firmament, and similar areas, as opposed to a city's one main\n" +
+                "aetheryte. Off shows only main aetherytes. Whichever ones are shown\n" +
+                "always use their correct icon (see below) — this only affects\n" +
+                "whether shards appear at all, not which icon they'd use.");
+
         bool aIcon = cfg.ShowAetheryteIcons;
         if (ImGui.Checkbox("Show real aetheryte icon##aicon", ref aIcon))
         { cfg.ShowAetheryteIcons = aIcon; changed = true; }
         if (ImGui.IsItemHovered())
             ImGui.SetTooltip(
-                "The icon ID numbers below are confirmed against a reference plugin's\n" +
-                "icon table. Falls back to the colour dot above only if an ID somehow\n" +
-                "doesn't resolve to a loadable texture.");
+                "Icon IDs are confirmed against a reference plugin's icon table.\n" +
+                "Falls back to the colour dot above only if an icon somehow doesn't\n" +
+                "resolve to a loadable texture.");
 
         ImGui.BeginDisabled(!aIcon);
         ImGui.Indent();
+        int aMin = (int)cfg.AetheryteIconMinSize;
+        if (ImGui.SliderInt("Min size (far away)##amin", ref aMin, 8, 50))
+        { cfg.AetheryteIconMinSize = aMin; changed = true; }
+        int aMax = (int)cfg.AetheryteIconMaxSize;
+        if (ImGui.SliderInt("Max size (close up)##amax", ref aMax, 8, 60))
+        { cfg.AetheryteIconMaxSize = aMax; changed = true; }
+        ImGui.Unindent();
+        ImGui.EndDisabled();
 
-        bool autoShard = cfg.AutoDetectAethernetShards;
-        if (ImGui.Checkbox("Use separate icon for Aethernet shards##autoshard", ref autoShard))
-        { cfg.AutoDetectAethernetShards = autoShard; changed = true; }
-        if (ImGui.IsItemHovered())
-            ImGui.SetTooltip(
-                "Tells city main aetherytes apart from smaller Aethernet shard waypoints\n" +
-                "by checking the object's displayed name: a main aetheryte is just named\n" +
-                "\"Aetheryte\" (the generic category name) while shards show their specific\n" +
-                "sub-location name. Turn off to use the Big icon for all of them.");
-
-        string bigName = cfg.AetheryteBigName;
-        if (ImGui.InputText("Main aetheryte name##bigname", ref bigName, 64))
-        { cfg.AetheryteBigName = bigName; changed = true; }
-        if (ImGui.IsItemHovered())
-            ImGui.SetTooltip(
-                "The exact displayed name a city's main aetheryte uses in your game\n" +
-                "language. Default \"Aetheryte\" is correct for English clients.");
-
-        ImGui.BeginDisabled(!autoShard);
         string shardName = cfg.AethernetShardName;
         if (ImGui.InputText("Aethernet shard name##shardname", ref shardName, 64))
         { cfg.AethernetShardName = shardName; changed = true; }
@@ -337,25 +339,17 @@ public sealed class ConfigWindow : Window
             ImGui.SetTooltip(
                 "A word that appears in every Aethernet shard's name in your game\n" +
                 "language. Matched as a substring, so \"Aethernet\" catches \"Ul'dah\n" +
-                "Aethernet Shard\", \"Limsa Lominsa Aethernet Shard\", etc. all at once.");
-        ImGui.EndDisabled();
-
-        float aMin = cfg.AetheryteIconMinSize;
-        if (ImGui.SliderFloat("Min size (far away)##amin", ref aMin, 8f, 50f))
-        { cfg.AetheryteIconMinSize = aMin; changed = true; }
-        float aMax = cfg.AetheryteIconMaxSize;
-        if (ImGui.SliderFloat("Max size (close up)##amax", ref aMax, 8f, 60f))
-        { cfg.AetheryteIconMaxSize = aMax; changed = true; }
-        ImGui.Unindent();
-        ImGui.EndDisabled();
+                "Aethernet Shard\", \"Limsa Lominsa Aethernet Shard\", etc. all at once.\n" +
+                "Any real aetheryte that DOESN'T match this is assumed to be a city's\n" +
+                "main aetheryte by default — no separate name needed for that.");
 
         ImGui.EndDisabled();
         ImGui.Unindent();
 
         ImGui.Spacing();
         ImGui.TextDisabled("Maximum detection distance (straight-line, includes height):");
-        float md = cfg.MaxMarkerDistance;
-        if (ImGui.SliderFloat("yalms##maxd", ref md, 10f, 200f))
+        int md = (int)cfg.MaxMarkerDistance;
+        if (ImGui.SliderInt("yalms##maxd", ref md, 10, 200))
         { cfg.MaxMarkerDistance = md; changed = true; }
 
         ImGui.Spacing();
@@ -408,20 +402,20 @@ public sealed class ConfigWindow : Window
         ImGui.Indent();
         ImGui.BeginDisabled(!fateB);
 
-        float fateDist = cfg.MaxFateDistance;
-        if (ImGui.SliderFloat("Detection range (yalms)##fatedist", ref fateDist, 30f, 400f))
+        int fateDist = (int)cfg.MaxFateDistance;
+        if (ImGui.SliderInt("Detection range (yalms)##fatedist", ref fateDist, 30, 400))
         { cfg.MaxFateDistance = fateDist; changed = true; }
         if (ImGui.IsItemHovered())
             ImGui.SetTooltip(
                 "Much larger by default than the other markers' range — FATEs are\n" +
                 "meant to be discoverable from well outside normal combat awareness.");
 
-        float fateMin = cfg.FateIconMinSize;
-        if (ImGui.SliderFloat("Min icon size (far away)##fatemin", ref fateMin, 8f, 50f))
+        int fateMin = (int)cfg.FateIconMinSize;
+        if (ImGui.SliderInt("Min icon size (far away)##fatemin", ref fateMin, 8, 50))
         { cfg.FateIconMinSize = fateMin; changed = true; }
 
-        float fateMax = cfg.FateIconMaxSize;
-        if (ImGui.SliderFloat("Max icon size (close up)##fatemax", ref fateMax, 8f, 64f))
+        int fateMax = (int)cfg.FateIconMaxSize;
+        if (ImGui.SliderInt("Max icon size (close up)##fatemax", ref fateMax, 8, 64))
         { cfg.FateIconMaxSize = fateMax; changed = true; }
 
         ImGui.EndDisabled();

@@ -415,9 +415,7 @@ public sealed class CompassHud : IDisposable
             int   iconId   = 0;
             float iconSize = 0f;
 
-            bool isAetheryteKind = obj.ObjectKind == ObjectKind.Aetheryte
-                || ((obj.ObjectKind == ObjectKind.EventNpc || obj.ObjectKind == ObjectKind.EventObj)
-                    && IsAetheryteLikeName(obj.Name.TextValue));
+            bool isAetheryteKind = ClassifyAetheryte(obj) != AetheryteNameKind.None;
 
             if (config.ShowAetheryteIcons && isAetheryteKind)
             {
@@ -588,49 +586,68 @@ public sealed class CompassHud : IDisposable
         return icon;
     }
 
+    /// <summary>Which aetheryte category, if any, an object matches.</summary>
+    private enum AetheryteNameKind { None, Big, Shard }
+
     /// <summary>
-    /// Resolves which aetheryte icon to use for a given live object, using the two
-    /// configurable name strings. A city's main aetheryte exactly matches
-    /// <see cref="Configuration.AetheryteBigName"/> ("Aetheryte" in English). Smaller
-    /// Aethernet shard waypoints contain <see cref="Configuration.AethernetShardName"/>
-    /// ("Aethernet") as a substring — that single string catches every city variant
-    /// ("Ul'dah Aethernet Shard", "Limsa Lominsa Aethernet Shard", etc.).
+    /// Classifies an object using a single signal — whether its name contains
+    /// <see cref="Configuration.AethernetShardName"/> ("Aethernet" by default, matched
+    /// as a substring so it catches every city's variant in one go) — interpreted
+    /// differently depending on ObjectKind:
+    ///
+    /// • ObjectKind.Aetheryte objects are aetherytes by definition (the game doesn't
+    ///   use this kind for anything else), so one IS always classified as Big or
+    ///   Shard — Shard if the name matches, Big by default otherwise. No separate
+    ///   "main aetheryte name" check is needed; Big is just the fallback.
+    ///
+    /// • ObjectKind.EventNpc / EventObj cover all sorts of unrelated interactable
+    ///   objects (regular NPCs, housing furnishings, etc.), so a name match there
+    ///   only ever means Shard — there's no safe "default to Big" assumption for
+    ///   these kinds, since that would misclassify ordinary NPCs as aetherytes.
+    ///   A non-match returns None so the caller falls through to whatever else
+    ///   that ObjectKind would normally mean.
+    ///
+    /// Used as the single source of truth for both icon selection and visibility, so
+    /// the two can never drift out of sync with each other.
     /// </summary>
-    private int GetAetheryteIconId(IGameObject obj)
+    private AetheryteNameKind ClassifyAetheryte(IGameObject obj)
     {
-        if (!config.AutoDetectAethernetShards)
-            return config.AetheryteIconId;
+        bool looksLikeShard = !string.IsNullOrEmpty(config.AethernetShardName)
+            && obj.Name.TextValue.Contains(config.AethernetShardName, StringComparison.OrdinalIgnoreCase);
 
-        var name = obj.Name.TextValue;
+        if (obj.ObjectKind == ObjectKind.Aetheryte)
+            return looksLikeShard ? AetheryteNameKind.Shard : AetheryteNameKind.Big;
 
-        // Exact match on the generic big-aetheryte name
-        if (string.Equals(name, config.AetheryteBigName, StringComparison.OrdinalIgnoreCase))
-            return config.AetheryteIconId;
-
-        // Substring match on the shard keyword — catches any city-prefixed shard name
-        if (!string.IsNullOrEmpty(config.AethernetShardName)
-            && name.Contains(config.AethernetShardName, StringComparison.OrdinalIgnoreCase))
-            return config.AethernetShardIconId;
-
-        // Neither matched — default to big icon rather than silently showing nothing
-        return config.AetheryteIconId;
+        return looksLikeShard ? AetheryteNameKind.Shard : AetheryteNameKind.None;
     }
 
+    /// <summary>Icon selection is always correct for whatever this is classified as.</summary>
+    private int GetAetheryteIconId(IGameObject obj) =>
+        ClassifyAetheryte(obj) == AetheryteNameKind.Shard
+            ? config.AethernetShardIconId
+            : config.AetheryteIconId;   // Big, or unmatched — default to the Big icon
+
     /// <summary>
-    /// True if a name matches either the configured Big-aetheryte name (exact) or the
-    /// Aethernet-shard keyword (substring). Used to catch housing-ward and Firmament
-    /// teleport crystals, which are ObjectKind.EventNpc rather than ObjectKind.Aetheryte
-    /// — the game apparently doesn't use the "real" aetheryte object kind for those,
-    /// even though they function identically and share the same display name pattern.
+    /// Checks whether an object matches a known aetheryte pattern (Big or Shard) and, if
+    /// so, returns the colour to draw it with — 0u if hidden by
+    /// <see cref="Configuration.ShowAetherytes"/> or <see cref="Configuration.ShowAethernetShards"/>.
+    /// Returns false if it doesn't match either pattern at all, so the caller (an
+    /// EventNpc/EventObj case) can fall through to whatever other marker category that
+    /// ObjectKind would otherwise represent.
     /// </summary>
-    private bool IsAetheryteLikeName(string name)
+    private bool TryGetAetheryteMarkerColor(IGameObject obj, out uint color)
     {
-        if (string.Equals(name, config.AetheryteBigName, StringComparison.OrdinalIgnoreCase))
-            return true;
-        if (!string.IsNullOrEmpty(config.AethernetShardName)
-            && name.Contains(config.AethernetShardName, StringComparison.OrdinalIgnoreCase))
-            return true;
-        return false;
+        var kind = ClassifyAetheryte(obj);
+        if (kind == AetheryteNameKind.None)
+        {
+            color = 0u;
+            return false;
+        }
+
+        bool hidden = !config.ShowAetherytes
+            || (kind == AetheryteNameKind.Shard && !config.ShowAethernetShards);
+        color = hidden ? 0u : C(config.AetheryteColor);
+        return true;
     }
 
     private uint MarkerColor(IGameObject obj, IPlayerCharacter player)
@@ -657,11 +674,11 @@ public sealed class CompassHud : IDisposable
                 return C(config.EnemyColor);
             case ObjectKind.EventNpc:
                 // Firmament teleport crystals are EventNpcs that share the same
-                // "Aetheryte" / "Aethernet Shard ..." display names as real aetherytes —
-                // route those through the aetheryte toggle/colour instead of the NPC one,
-                // completely independent of ShowNpcs.
-                if (IsAetheryteLikeName(obj.Name.TextValue))
-                    return config.ShowAetherytes ? C(config.AetheryteColor) : 0u;
+                // "Aethernet Shard ..." display name pattern as housing-ward shards —
+                // route those through the aetheryte toggles/colour instead of the NPC
+                // one, completely independent of ShowNpcs.
+                if (TryGetAetheryteMarkerColor(obj, out uint eventNpcAetherCol))
+                    return eventNpcAetherCol;
 
                 if (!config.ShowNpcs) return 0u;
                 if (config.NpcsOnlyIfTargetable && !obj.IsTargetable) return 0u;
@@ -671,11 +688,10 @@ public sealed class CompassHud : IDisposable
                 // ObjectKind.EventObj (not EventNpc, and not HousingEventObject either
                 // — an earlier guess that didn't pan out). We don't track any other
                 // kind of EventObj on the compass, so this case exists purely for the
-                // aetheryte check; anything that doesn't match falls through to nothing
-                // rather than some other fallback category.
-                if (IsAetheryteLikeName(obj.Name.TextValue))
-                    return config.ShowAetherytes ? C(config.AetheryteColor) : 0u;
-                return 0u;
+                // aetheryte check; anything that doesn't match falls through to nothing.
+                return TryGetAetheryteMarkerColor(obj, out uint eventObjAetherCol)
+                    ? eventObjAetherCol
+                    : 0u;
             case ObjectKind.GatheringPoint:
                 if (!config.ShowGatheringNodes) return 0u;
                 if (config.GatheringOnlyIfTargetable && !obj.IsTargetable) return 0u;
@@ -683,7 +699,11 @@ public sealed class CompassHud : IDisposable
             case ObjectKind.Treasure:
                 return config.ShowTreasure ? C(config.TreasureColor) : 0u;
             case ObjectKind.Aetheryte:
-                return config.ShowAetherytes ? C(config.AetheryteColor) : 0u;
+                // ClassifyAetheryte always returns Big or Shard (never None) for this
+                // ObjectKind — the kind itself is definitional, so TryGetAetheryteMarkerColor
+                // is guaranteed to return true here; this can never fall through.
+                TryGetAetheryteMarkerColor(obj, out uint realAetherCol);
+                return realAetherCol;
             default:
                 return 0u;
         }

@@ -103,22 +103,25 @@ public class Configuration : IPluginConfiguration
     public bool ShowTreasure      { get; set; } = true;
     public bool ShowAetherytes    { get; set; } = true;
     /// <summary>
+    /// Whether Aethernet shards (the smaller waypoints in housing wards, the Firmament,
+    /// and similar areas) are shown at all, as opposed to just a city's one main
+    /// aetheryte. Classification uses <see cref="AethernetShardName"/> below — anything
+    /// matching that is a shard; every other real aetheryte is treated as the main one
+    /// by default, no separate "main aetheryte name" needed. Icon selection (see
+    /// <see cref="ShowAetheryteIcons"/>) is always correct for whichever ones are
+    /// visible — this only controls whether shards appear, not which icon they get.
+    /// </summary>
+    public bool ShowAethernetShards { get; set; } = true;
+    /// <summary>
     /// Shows a real game icon for aetherytes instead of a plain dot. Icon IDs are
     /// confirmed against a reference plugin's community-maintained icon table.
     /// </summary>
     public bool ShowAetheryteIcons { get; set; } = true;
     /// <summary>
-    /// Whether to tell a city's main "Big" aetheryte apart from its smaller Aethernet
-    /// shard waypoints using the two name fields below. Turn off to use the Big icon
-    /// for every aetheryte.
-    /// </summary>
-    public bool AutoDetectAethernetShards { get; set; } = true;
-    /// <summary>Name of a city's main aetheryte in your game language (English default).</summary>
-    public string AetheryteBigName   { get; set; } = "Aetheryte";
-    /// <summary>
-    /// Partial or full name of Aethernet shard waypoints in your game language.
-    /// Matched as a case-insensitive substring, so "Aethernet" catches
-    /// "Ul'dah Aethernet Shard", "Limsa Lominsa Aethernet Shard", etc. in one go.
+    /// Partial or full name of Aethernet shard waypoints in your game language. Matched
+    /// as a case-insensitive substring, so "Aethernet" catches "Ul'dah Aethernet Shard",
+    /// "Limsa Lominsa Aethernet Shard", etc. in one go. This is the only name field
+    /// needed: any real aetheryte that doesn't match this is assumed to be the main one.
     /// </summary>
     public string AethernetShardName { get; set; } = "Aethernet";
     // Icon IDs are confirmed values — kept as properties so existing config files
