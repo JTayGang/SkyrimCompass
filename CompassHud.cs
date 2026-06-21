@@ -44,6 +44,11 @@ public sealed class CompassHud : IDisposable
     private readonly ExcelSheet<GatheringPointBase> gatheringPointBaseSheet;
     private readonly ExcelSheet<GatheringType> gatheringTypeSheet;
 
+    // BaseId -> "is this a Mender NPC" (title contains "Mender"), cached permanently —
+    // static game data, same reasoning as gatheringIconCache.
+    private readonly Dictionary<uint, bool> npcIsMenderCache = new();
+    private readonly ExcelSheet<ENpcResident> npcResidentSheet;
+
     private static readonly (float Deg, string Label, bool IsMajor)[] Directions =
     [
         (0f,   "N",  true),
@@ -79,6 +84,7 @@ public sealed class CompassHud : IDisposable
         gatheringPointSheet     = dataManager.GetExcelSheet<GatheringPoint>();
         gatheringPointBaseSheet = dataManager.GetExcelSheet<GatheringPointBase>();
         gatheringTypeSheet      = dataManager.GetExcelSheet<GatheringType>();
+        npcResidentSheet        = dataManager.GetExcelSheet<ENpcResident>();
 
         // OnDataUpdate (not OnNamePlateUpdate) is the one that fires every frame with
         // ALL current nameplates, not just ones that changed — exactly what we need to
@@ -431,6 +437,16 @@ public sealed class CompassHud : IDisposable
                 iconSize = config.NpcQuestIconMinSize
                          + (config.NpcQuestIconMaxSize - config.NpcQuestIconMinSize) * t;
             }
+            else if (config.ShowMenderIcons
+                && obj.ObjectKind == ObjectKind.EventNpc
+                && IsMenderNpc(obj.BaseId))
+            {
+                // Shares the quest-marker size range above — one shared "any icon in
+                // place of an NPC dot" size knob rather than a separate slider pair.
+                iconId   = config.MenderIconId;
+                iconSize = config.NpcQuestIconMinSize
+                         + (config.NpcQuestIconMaxSize - config.NpcQuestIconMinSize) * t;
+            }
             else if (config.ShowGatheringIcons && obj.ObjectKind == ObjectKind.GatheringPoint)
             {
                 int gatherIcon = GetGatheringIconId(obj.BaseId);
@@ -584,6 +600,25 @@ public sealed class CompassHud : IDisposable
 
         gatheringIconCache[baseId] = icon;
         return icon;
+    }
+
+    /// <summary>
+    /// True if this NPC's ENpcResident title contains "Mender" (e.g. "Mender",
+    /// "Merchant &amp; Mender", "Independent Arms Mender"). Confirmed real keyword —
+    /// matches 48 actual NPCs in the game's own data. Cached permanently per BaseId.
+    /// </summary>
+    private bool IsMenderNpc(uint baseId)
+    {
+        if (npcIsMenderCache.TryGetValue(baseId, out bool cached))
+            return cached;
+
+        bool isMender = false;
+        var row = npcResidentSheet.GetRowOrDefault(baseId);
+        if (row != null)
+            isMender = row.Value.Title.ToString().Contains("Mender", StringComparison.OrdinalIgnoreCase);
+
+        npcIsMenderCache[baseId] = isMender;
+        return isMender;
     }
 
     /// <summary>Which aetheryte category, if any, an object matches.</summary>

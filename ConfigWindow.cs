@@ -36,7 +36,14 @@ public sealed class ConfigWindow : Window
         {
             changed |= DrawLayoutTab(cfg);
             changed |= DrawColorsTab(cfg);
-            changed |= DrawMarkersTab(cfg);
+            changed |= DrawDetectionTab(cfg);
+            changed |= DrawPlayersTab(cfg);
+            changed |= DrawEnemiesTab(cfg);
+            changed |= DrawNpcsTab(cfg);
+            changed |= DrawGatheringTab(cfg);
+            changed |= DrawTreasureTab(cfg);
+            changed |= DrawAetherytesTab(cfg);
+            changed |= DrawFatesTab(cfg);
             ImGui.EndTabBar();
         }
 
@@ -171,26 +178,90 @@ public sealed class ConfigWindow : Window
         return changed;
     }
 
-    // ── Markers tab ──────────────────────────────────────────────────────────
+    // ── Detection tab ────────────────────────────────────────────────────────
+    // Houses the settings that are genuinely shared across multiple marker
+    // categories rather than belonging to any one of them: MaxMarkerDistance
+    // covers everything in the main object-table loop (Players/Enemies/NPCs/
+    // Gathering/Treasure/Aetherytes — FATEs have their own separate range on
+    // their own tab), and the fade curve is shared by literally every category
+    // including FATEs (one ComputeFadeAlpha method, used everywhere).
 
-    private static bool DrawMarkersTab(Configuration cfg)
+    private static bool DrawDetectionTab(Configuration cfg)
     {
-        if (!ImGui.BeginTabItem("Markers")) return false;
+        if (!ImGui.BeginTabItem("Detection")) return false;
         bool changed = false;
 
-        ImGui.TextDisabled("Toggle a marker type and customise its colour:");
+        ImGui.TextDisabled(
+            "Settings shared across every marker category below\n" +
+            "(FATEs have their own separate detection range on their own tab).");
         ImGui.Spacing();
 
-        bool    b;
-        Vector4 c;
+        ImGui.TextDisabled("Maximum detection distance (straight-line, includes height):");
+        int md = (int)cfg.MaxMarkerDistance;
+        if (ImGui.SliderInt("yalms##maxd", ref md, 10, 200))
+        { cfg.MaxMarkerDistance = md; changed = true; }
 
-        // Each row: [checkbox] [colour swatch + label]
-        b = cfg.ShowPlayers;   c = cfg.PlayerColor;
+        ImGui.Spacing();
+        ImGui.Separator();
+        ImGui.Spacing();
+        ImGui.TextDisabled("Dot distance-fade curve");
+
+        float nz = cfg.DotNearZone;
+        if (ImGui.SliderFloat("Full opacity zone##nz", ref nz, 0.5f, 1.0f))
+        { cfg.DotNearZone = nz; changed = true; }
+        if (ImGui.IsItemHovered())
+            ImGui.SetTooltip(
+                "Dots are fully opaque while closer than this fraction of max range.\n" +
+                "0.85 = only the nearest 15%% of range is full brightness.\n" +
+                "1.00 = always fully opaque (disables distance fade).");
+
+        float fz = cfg.DotFarZone;
+        if (ImGui.SliderFloat("Fade-to-zero zone##fz", ref fz, 0.0f, 0.5f))
+        { cfg.DotFarZone = fz; changed = true; }
+        if (ImGui.IsItemHovered())
+            ImGui.SetTooltip(
+                "Dots fade to invisible below this fraction of max range.\n" +
+                "0.25 = the outermost 25%% fades to zero.\n" +
+                "0.00 = no fade-to-zero (dots stay at mid opacity until max range).");
+
+        float ma = cfg.DotMidAlpha;
+        if (ImGui.SliderFloat("Mid-range opacity##ma", ref ma, 0.0f, 1.0f))
+        { cfg.DotMidAlpha = ma; changed = true; }
+        if (ImGui.IsItemHovered())
+            ImGui.SetTooltip(
+                "Opacity of dots in the middle distance band.\n" +
+                "0.5 = 50%% visible.  0.0 = invisible in mid-range.  1.0 = fully opaque.");
+
+        ImGui.EndTabItem();
+        return changed;
+    }
+
+    // ── Players tab ──────────────────────────────────────────────────────────
+
+    private static bool DrawPlayersTab(Configuration cfg)
+    {
+        if (!ImGui.BeginTabItem("Players")) return false;
+        bool    changed = false;
+        bool    b = cfg.ShowPlayers;
+        Vector4 c = cfg.PlayerColor;
+
         if (ImGui.Checkbox("##players_en", ref b))        { cfg.ShowPlayers = b;        changed = true; }
         ImGui.SameLine();
         if (ImGui.ColorEdit4("Players##players_c", ref c, ColorPickerFlags)) { cfg.PlayerColor = c;    changed = true; }
 
-        b = cfg.ShowEnemies;   c = cfg.EnemyColor;
+        ImGui.EndTabItem();
+        return changed;
+    }
+
+    // ── Enemies tab ──────────────────────────────────────────────────────────
+
+    private static bool DrawEnemiesTab(Configuration cfg)
+    {
+        if (!ImGui.BeginTabItem("Enemies")) return false;
+        bool    changed = false;
+        bool    b = cfg.ShowEnemies;
+        Vector4 c = cfg.EnemyColor;
+
         if (ImGui.Checkbox("##enemies_en", ref b))        { cfg.ShowEnemies = b;        changed = true; }
         ImGui.SameLine();
         if (ImGui.ColorEdit4("Enemies##enemies_c", ref c, ColorPickerFlags)) { cfg.EnemyColor = c;    changed = true; }
@@ -207,9 +278,20 @@ public sealed class ConfigWindow : Window
                 "Great for decluttering big pulls, hunt trains, and FATEs.");
         ImGui.EndDisabled();
         ImGui.Unindent();
-        ImGui.Spacing();
 
-        b = cfg.ShowNpcs;      c = cfg.NpcColor;
+        ImGui.EndTabItem();
+        return changed;
+    }
+
+    // ── NPCs tab ─────────────────────────────────────────────────────────────
+
+    private static bool DrawNpcsTab(Configuration cfg)
+    {
+        if (!ImGui.BeginTabItem("NPCs")) return false;
+        bool    changed = false;
+        bool    b = cfg.ShowNpcs;
+        Vector4 c = cfg.NpcColor;
+
         if (ImGui.Checkbox("##npcs_en", ref b))           { cfg.ShowNpcs = b;           changed = true; }
         ImGui.SameLine();
         if (ImGui.ColorEdit4("NPCs##npcs_c", ref c, ColorPickerFlags))       { cfg.NpcColor = c;      changed = true; }
@@ -234,22 +316,42 @@ public sealed class ConfigWindow : Window
                 "in-progress \"?\", etc.) show that exact icon — the same one the game\n" +
                 "already displays above their head — instead of a plain dot.");
 
-        ImGui.BeginDisabled(!qIcon);
+        bool mIcon = cfg.ShowMenderIcons;
+        if (ImGui.Checkbox("Show real Mender icon##micon", ref mIcon))
+        { cfg.ShowMenderIcons = mIcon; changed = true; }
+        if (ImGui.IsItemHovered())
+            ImGui.SetTooltip(
+                "Shows the real game icon for Mender NPCs (gear repair vendors),\n" +
+                "identified by their \"Mender\" job title — confirmed against real\n" +
+                "game data. Shares the icon size sliders below with quest markers.");
+
+        ImGui.BeginDisabled(!qIcon && !mIcon);
         ImGui.Indent();
         int qMin = (int)cfg.NpcQuestIconMinSize;
-        if (ImGui.SliderInt("Min size (far away)##qmin", ref qMin, 8, 50))
+        if (ImGui.SliderInt("Min icon sizes (far away)##qmin", ref qMin, 8, 50))
         { cfg.NpcQuestIconMinSize = qMin; changed = true; }
         int qMax = (int)cfg.NpcQuestIconMaxSize;
-        if (ImGui.SliderInt("Max size (close up)##qmax", ref qMax, 8, 60))
+        if (ImGui.SliderInt("Max icon sizes (close up)##qmax", ref qMax, 8, 60))
         { cfg.NpcQuestIconMaxSize = qMax; changed = true; }
         ImGui.Unindent();
         ImGui.EndDisabled();
 
         ImGui.EndDisabled();
         ImGui.Unindent();
-        ImGui.Spacing();
 
-        b = cfg.ShowGatheringNodes; c = cfg.GatheringColor;
+        ImGui.EndTabItem();
+        return changed;
+    }
+
+    // ── Gathering tab ────────────────────────────────────────────────────────
+
+    private static bool DrawGatheringTab(Configuration cfg)
+    {
+        if (!ImGui.BeginTabItem("Gathering")) return false;
+        bool    changed = false;
+        bool    b = cfg.ShowGatheringNodes;
+        Vector4 c = cfg.GatheringColor;
+
         if (ImGui.Checkbox("##gath_en", ref b))           { cfg.ShowGatheringNodes = b; changed = true; }
         ImGui.SameLine();
         if (ImGui.ColorEdit4("Gathering Nodes##gath_c", ref c, ColorPickerFlags)) { cfg.GatheringColor = c; changed = true; }
@@ -286,14 +388,37 @@ public sealed class ConfigWindow : Window
 
         ImGui.EndDisabled();
         ImGui.Unindent();
-        ImGui.Spacing();
 
-        b = cfg.ShowTreasure;  c = cfg.TreasureColor;
+        ImGui.EndTabItem();
+        return changed;
+    }
+
+    // ── Treasure tab ─────────────────────────────────────────────────────────
+
+    private static bool DrawTreasureTab(Configuration cfg)
+    {
+        if (!ImGui.BeginTabItem("Treasure")) return false;
+        bool    changed = false;
+        bool    b = cfg.ShowTreasure;
+        Vector4 c = cfg.TreasureColor;
+
         if (ImGui.Checkbox("##tres_en", ref b))           { cfg.ShowTreasure = b;       changed = true; }
         ImGui.SameLine();
         if (ImGui.ColorEdit4("Treasure##tres_c", ref c, ColorPickerFlags))   { cfg.TreasureColor = c; changed = true; }
 
-        b = cfg.ShowAetherytes; c = cfg.AetheryteColor;
+        ImGui.EndTabItem();
+        return changed;
+    }
+
+    // ── Aetherytes tab ───────────────────────────────────────────────────────
+
+    private static bool DrawAetherytesTab(Configuration cfg)
+    {
+        if (!ImGui.BeginTabItem("Aetherytes")) return false;
+        bool    changed = false;
+        bool    b = cfg.ShowAetherytes;
+        Vector4 c = cfg.AetheryteColor;
+
         if (ImGui.Checkbox("##aeth_en", ref b))           { cfg.ShowAetherytes = b;     changed = true; }
         ImGui.SameLine();
         if (ImGui.ColorEdit4("Aetherytes##aeth_c", ref c, ColorPickerFlags)) { cfg.AetheryteColor = c; changed = true; }
@@ -346,49 +471,22 @@ public sealed class ConfigWindow : Window
         ImGui.EndDisabled();
         ImGui.Unindent();
 
+        ImGui.EndTabItem();
+        return changed;
+    }
+
+    // ── FATEs tab ────────────────────────────────────────────────────────────
+
+    private static bool DrawFatesTab(Configuration cfg)
+    {
+        if (!ImGui.BeginTabItem("FATEs")) return false;
+        bool    changed = false;
+        bool    fateB = cfg.ShowFates;
+        Vector4 fateC = cfg.FateColor;
+
+        ImGui.TextDisabled("Independent of every other tab's toggles.");
         ImGui.Spacing();
-        ImGui.TextDisabled("Maximum detection distance (straight-line, includes height):");
-        int md = (int)cfg.MaxMarkerDistance;
-        if (ImGui.SliderInt("yalms##maxd", ref md, 10, 200))
-        { cfg.MaxMarkerDistance = md; changed = true; }
 
-        ImGui.Spacing();
-        ImGui.Separator();
-        ImGui.Spacing();
-        ImGui.TextDisabled("Dot distance-fade curve");
-
-        float nz = cfg.DotNearZone;
-        if (ImGui.SliderFloat("Full opacity zone##nz", ref nz, 0.5f, 1.0f))
-        { cfg.DotNearZone = nz; changed = true; }
-        if (ImGui.IsItemHovered())
-            ImGui.SetTooltip(
-                "Dots are fully opaque while closer than this fraction of max range.\n" +
-                "0.85 = only the nearest 15%% of range is full brightness.\n" +
-                "1.00 = always fully opaque (disables distance fade).");
-
-        float fz = cfg.DotFarZone;
-        if (ImGui.SliderFloat("Fade-to-zero zone##fz", ref fz, 0.0f, 0.5f))
-        { cfg.DotFarZone = fz; changed = true; }
-        if (ImGui.IsItemHovered())
-            ImGui.SetTooltip(
-                "Dots fade to invisible below this fraction of max range.\n" +
-                "0.25 = the outermost 25%% fades to zero.\n" +
-                "0.00 = no fade-to-zero (dots stay at mid opacity until max range).");
-
-        float ma = cfg.DotMidAlpha;
-        if (ImGui.SliderFloat("Mid-range opacity##ma", ref ma, 0.0f, 1.0f))
-        { cfg.DotMidAlpha = ma; changed = true; }
-        if (ImGui.IsItemHovered())
-            ImGui.SetTooltip(
-                "Opacity of dots in the middle distance band.\n" +
-                "0.5 = 50%% visible.  0.0 = invisible in mid-range.  1.0 = fully opaque.");
-
-        ImGui.Spacing();
-        ImGui.Separator();
-        ImGui.Spacing();
-        ImGui.TextDisabled("FATEs (independent of all toggles above)");
-
-        bool fateB = cfg.ShowFates; Vector4 fateC = cfg.FateColor;
         if (ImGui.Checkbox("##fates_en", ref fateB))      { cfg.ShowFates = fateB;  changed = true; }
         ImGui.SameLine();
         if (ImGui.ColorEdit4("Show FATEs##fates_c", ref fateC, ColorPickerFlags)) { cfg.FateColor = fateC; changed = true; }
@@ -396,8 +494,9 @@ public sealed class ConfigWindow : Window
             ImGui.SetTooltip(
                 "Shows active or about-to-start FATEs using their real game icon.\n" +
                 "The colour here is only a fallback dot, used if the icon texture\n" +
-                "hasn't loaded yet. Works even with every marker category above off —\n" +
-                "FATEs are a separate kind of point of interest, not \"an enemy\".");
+                "hasn't loaded yet. Works even with every marker category on every\n" +
+                "other tab turned off — FATEs are a separate kind of point of\n" +
+                "interest, not \"an enemy\".");
 
         ImGui.Indent();
         ImGui.BeginDisabled(!fateB);
@@ -408,7 +507,8 @@ public sealed class ConfigWindow : Window
         if (ImGui.IsItemHovered())
             ImGui.SetTooltip(
                 "Much larger by default than the other markers' range — FATEs are\n" +
-                "meant to be discoverable from well outside normal combat awareness.");
+                "meant to be discoverable from well outside normal combat awareness.\n" +
+                "This is FATEs' own range, separate from the Detection tab's slider.");
 
         int fateMin = (int)cfg.FateIconMinSize;
         if (ImGui.SliderInt("Min icon size (far away)##fatemin", ref fateMin, 8, 50))

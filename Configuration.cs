@@ -83,6 +83,18 @@ public class Configuration : IPluginConfiguration
     public float NpcQuestIconMinSize { get; set; } = 20f;
     /// <summary>Icon pixel diameter when very close — the nearest/largest size.</summary>
     public float NpcQuestIconMaxSize { get; set; } = 30f;
+    /// <summary>
+    /// Shows the real game icon for Mender NPCs (gear repair vendors), identified by
+    /// their "Mender" job title. Shares <see cref="NpcQuestIconMinSize"/> and
+    /// <see cref="NpcQuestIconMaxSize"/> with the quest-marker icon feature above —
+    /// one shared size range for any icon shown in place of an NPC dot.
+    /// </summary>
+    public bool ShowMenderIcons { get; set; } = false;
+    // Confirmed game icon ID for Mender NPCs — kept as a property (not shown in the UI)
+    // for the same reason as AetheryteIconId: round-trips cleanly in saved config files,
+    // but there's no reason a player should need to change it.
+    public int MenderIconId { get; set; } = 60434;
+
     public bool ShowGatheringNodes{ get; set; } = true;
     /// <summary>
     /// When enabled, hides GatheringPoint objects that aren't currently targetable —
