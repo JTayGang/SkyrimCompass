@@ -55,6 +55,44 @@ public sealed class CompassHud : IDisposable
     // ENpcResident sheet data before being added (not guessed).
     private static readonly string[] MenderTitleKeywords = { "Mender" };
 
+    // Reused every frame by RenderMarkers/RenderFates to sort markers by distance
+    // before drawing, so closer markers paint on top of farther ones instead of in
+    // whatever order objectTable/fateTable happen to enumerate. Fields (not locals)
+    // purely to avoid re-allocating a List every frame.
+    private readonly List<MarkerCandidate> markerCandidates = new();
+    private readonly List<FateCandidate>   fateCandidates   = new();
+
+    /// <summary>
+    /// A marker that's already passed every RenderMarkers filter (range, color, FOV),
+    /// carrying just enough precomputed data that the draw pass doesn't need to redo
+    /// any of that work once the list is sorted by distance.
+    /// </summary>
+    private readonly struct MarkerCandidate
+    {
+        public readonly IGameObject Obj;
+        public readonly float       Dist;
+        public readonly float       Delta;
+        public readonly uint        Col;
+
+        public MarkerCandidate(IGameObject obj, float dist, float delta, uint col)
+        {
+            Obj = obj; Dist = dist; Delta = delta; Col = col;
+        }
+    }
+
+    /// <summary>Same idea as <see cref="MarkerCandidate"/>, for RenderFates.</summary>
+    private readonly struct FateCandidate
+    {
+        public readonly IFate Fate;
+        public readonly float Dist;
+        public readonly float Delta;
+
+        public FateCandidate(IFate fate, float dist, float delta)
+        {
+            Fate = fate; Dist = dist; Delta = delta;
+        }
+    }
+
     /// <summary>
     /// Multiplier applied to NPC marker icons (quest/Mender/Shop) and the player party
     /// role/job icon, on top of their normal size formula. Most of these game icon
@@ -68,7 +106,7 @@ public sealed class CompassHud : IDisposable
     /// which weren't reported as undersized. Aetheryte icons get their own larger
     /// multiplier below instead, since their texture padding runs heavier than the rest.
     /// </summary>
-    private const float IconSizeMultiplier = 1.4f;
+    private const float IconSizeMultiplier = 1.5f;
     /// <summary>
     /// Same idea as <see cref="IconSizeMultiplier"/>, but specifically for aetheryte
     /// icons (both the Big and Aethernet Shard variants) — their source textures carry
@@ -433,6 +471,13 @@ public sealed class CompassHud : IDisposable
         float maxDistSq = config.MaxMarkerDistance * config.MaxMarkerDistance;
         float extHalf   = halfVis * lensStr;
 
+        // Pass 1: filter every object down to what actually qualifies for a marker
+        // (range, color, FOV — exactly the checks this loop always did), then sort by
+        // distance. ImGui paints in draw-call order, so without this the stacking
+        // order when two markers overlap on screen was effectively whatever order
+        // objectTable happens to enumerate in, not necessarily the closer one on top.
+        markerCandidates.Clear();
+
         foreach (var obj in objectTable)
         {
             // Identity check stays keyed on the character regardless of which origin
@@ -459,10 +504,25 @@ public sealed class CompassHud : IDisposable
             float delta   = Delta(heading, bearing);
             if (MathF.Abs(delta) > extHalf) continue;
 
+            markerCandidates.Add(new MarkerCandidate(obj, MathF.Sqrt(dsq), delta, col));
+        }
+
+        // Farthest first, closest last — later draw calls paint on top in ImGui, so
+        // this puts the nearer marker visually in front whenever two overlap.
+        markerCandidates.Sort((a, b) => b.Dist.CompareTo(a.Dist));
+
+        // Pass 2: same per-marker visuals/draw logic the loop always had, just walked
+        // in distance-sorted order instead of objectTable's native order.
+        foreach (var candidate in markerCandidates)
+        {
+            var   obj   = candidate.Obj;
+            uint  col   = candidate.Col;
+            float delta = candidate.Delta;
+            float dist  = candidate.Dist;
+
             // Apply lens projection for screen X
             float sx = cx + Project(delta, halfVis, barHalfW, lensStr);
 
-            float dist = MathF.Sqrt(dsq);
             float t    = 1f - dist / config.MaxMarkerDistance;   // 1 = close, 0 = at max range
             // Fallback dot radius for kinds that don't have their own page-level size
             // slider (Gathering without icon, Treasure). Players, NPCs, Enemies, and
@@ -567,13 +627,19 @@ public sealed class CompassHud : IDisposable
                             // most visible right at the border, nearly gone by the centre
                             // — faking a soft shadow falling inward from the border since
                             // ImGui's draw list has no blur filter to do this for real.
+                            // Wrapped in PushUnclip/PopUnclip so these escape the bar's
+                            // clip rect the same way TryDrawIcon's image does below —
+                            // otherwise, near the bar's edge, the icon would render in
+                            // full while its own border/shadow got hard-cut behind it.
                             uint  roleCol      = GetRoleColor(partyChar);
                             float iconDrawSize = playerSize * IconSizeMultiplier;
                             float iconHalf     = iconDrawSize * 0.5f;
+                            PushUnclip(dl);
                             dl.AddCircle(V(sx, cy), iconHalf + 1.0f, WithAlpha(roleCol, alpha), 0, 3.0f);
                             dl.AddCircleFilled(V(sx, cy), iconHalf * 0.85f, WithAlpha(roleCol, alpha * 0.6f));
                             dl.AddCircleFilled(V(sx, cy), iconHalf * 0.65f, WithAlpha(roleCol, alpha * 0.4f));
                             dl.AddCircleFilled(V(sx, cy), iconHalf * 0.45f, WithAlpha(roleCol, alpha * 0.2f));
+                            PopUnclip(dl);
 
                             // Job icon drawn on top — if the icon ID doesn't resolve to a
                             // loadable texture (e.g. a future job beyond the known range),
@@ -701,6 +767,10 @@ public sealed class CompassHud : IDisposable
         float maxDistSq = config.MaxFateDistance * config.MaxFateDistance;
         float extHalf   = halfVis * lensStr;
 
+        // Same two-pass approach as RenderMarkers: filter first, then sort by distance
+        // so a closer FATE paints on top of a farther one if their icons overlap.
+        fateCandidates.Clear();
+
         foreach (var fate in fateTable)
         {
             if (fate == null) continue;
@@ -720,9 +790,19 @@ public sealed class CompassHud : IDisposable
             float delta   = Delta(heading, bearing);
             if (MathF.Abs(delta) > extHalf) continue;
 
+            fateCandidates.Add(new FateCandidate(fate, MathF.Sqrt(dsq), delta));
+        }
+
+        fateCandidates.Sort((a, b) => b.Dist.CompareTo(a.Dist));
+
+        foreach (var candidate in fateCandidates)
+        {
+            var   fate  = candidate.Fate;
+            float delta = candidate.Delta;
+            float dist  = candidate.Dist;
+
             float sx = cx + Project(delta, halfVis, barHalfW, lensStr);
 
-            float dist = MathF.Sqrt(dsq);
             float t    = 1f - dist / config.MaxFateDistance;   // 1 = close, 0 = at max range
             float iconSize = config.FateIconMinSize + (config.FateIconMaxSize - config.FateIconMinSize) * t;
             // Same edge fade as RenderMarkers — FATEs render exclusively as icons, so
@@ -761,12 +841,12 @@ public sealed class CompassHud : IDisposable
         // fine for plain dots, but icons near the left/right edge of the visible FOV
         // can have a bounding box wider than the bar (especially with
         // IconSizeMultiplier/AetheryteIconSizeMultiplier inflating icon sizes), so that
-        // clip was hard-cutting them right at the bar's edge. Briefly push a full-display,
-        // non-intersecting clip rect just for this one image so it draws in full. This
+        // clip was hard-cutting them right at the bar's edge. PushUnclip/PopUnclip
+        // briefly escape that clip just for this one image so it draws in full. This
         // doesn't change paint order — the end-cap diamonds are drawn afterward in
         // RenderBar (after its own clip is popped), so they still end up on top of
         // whatever this paints, clipped or not.
-        dl.PushClipRect(Vector2.Zero, ImGui.GetIO().DisplaySize, false);
+        PushUnclip(dl);
         dl.AddImage(
             tex.Handle,
             V(sx - half, cy - half),
@@ -774,7 +854,7 @@ public sealed class CompassHud : IDisposable
             Vector2.Zero,
             Vector2.One,
             tint);
-        dl.PopClipRect();
+        PopUnclip(dl);
         return true;
     }
 
@@ -1032,6 +1112,21 @@ public sealed class CompassHud : IDisposable
         uint newA  = (uint)(origA * MathF.Min(1f, MathF.Max(0f, mul)));
         return (color & 0x00FFFFFFu) | (newA << 24);
     }
+
+    /// <summary>
+    /// Pushes a clip rect spanning the full display, ignoring whatever clip RenderBar
+    /// currently has active — lets whatever's drawn between this and <see
+    /// cref="PopUnclip"/> render past the bar's edge instead of being hard-cut by
+    /// RenderBar's own clip rect (which is sized to the bar itself). Used by anything
+    /// that needs to match the bar-edge behaviour of a real icon — currently
+    /// TryDrawIcon's image and the party role icon's border/drop-shadow circles, which
+    /// need to escape the same clip together or they visually disagree right at the
+    /// bar's edge (icon rendering in full while its border/shadow gets cut off).
+    /// </summary>
+    private static void PushUnclip(ImDrawListPtr dl) =>
+        dl.PushClipRect(Vector2.Zero, ImGui.GetIO().DisplaySize, false);
+
+    private static void PopUnclip(ImDrawListPtr dl) => dl.PopClipRect();
 
     /// <summary>
     /// Logs every object within <paramref name="radius"/> yalms of the player to
