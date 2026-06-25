@@ -105,6 +105,8 @@ public sealed class CompassHud : IDisposable
     /// effectively hit a minimum size floor. Deliberately NOT applied to Gathering icons,
     /// which weren't reported as undersized. Aetheryte icons get their own larger
     /// multiplier below instead, since their texture padding runs heavier than the rest.
+    /// Also applied to named player icon overrides, keeping all player markers sized
+    /// consistently with the party role icon that uses the same multiplier.
     /// </summary>
     private const float IconSizeMultiplier = 1.5f;
     /// <summary>
@@ -651,22 +653,135 @@ public sealed class CompassHud : IDisposable
 
                     if (!drewJobIcon)
                     {
-                        // Friends on the list render as solid filled dots to stand out
-                        // from the crowd; everyone else gets the hollow ring.
-                        bool isFriend = config.SolidFriendDots
-                            && obj is ICharacter ch
-                            && (ch.StatusFlags & StatusFlags.Friend) != 0;
-
-                        if (isFriend)
+                        // ── Named player icon override ────────────────────────────────────
+                        // Checked before the friend-dot / hollow-ring defaults so that an
+                        // explicit per-player configuration takes priority over those.
+                        // Party role icons (the block above) are higher priority still —
+                        // this path is only reached when the player is NOT in the party or
+                        // ShowPartyRoleIcons is off, matching the "replace the normal player
+                        // dot or filled dot" intent described in the feature request.
+                        PlayerIconOverride? nameOverride = null;
+                        if (config.PlayerIconOverrides.Count > 0)
                         {
-                            dl.AddCircleFilled(V(sx, cy), playerR, WithAlpha(col, alpha));
-                            dl.AddCircle(V(sx, cy), playerR + 0.8f, WithAlpha(0x66000000u, alpha));
+                            var objName = obj.Name.TextValue;
+                            foreach (var ov in config.PlayerIconOverrides)
+                            {
+                                if (ov.PlayerName.Length > 0
+                                    && string.Equals(ov.PlayerName, objName,
+                                                     StringComparison.OrdinalIgnoreCase))
+                                {
+                                    nameOverride = ov;
+                                    break;
+                                }
+                            }
+                        }
+
+                        if (nameOverride is not null)
+                        {
+                            // Border ring, fill circles, and icon all share the same base radius —
+                            // derived from the player dot slider + global icon padding compensation,
+                            // same geometry as a party role icon. SizeMultiplier no longer scales
+                            // the draw quad; instead it shifts the UV window so the icon texture
+                            // zooms in or out while the rendered quad stays fixed at overrideHalf.
+                            // This means the icon can never grow past the border ring regardless
+                            // of how the multiplier is set.
+                            float overrideBaseSize = playerSize * IconSizeMultiplier;
+                            float overrideHalf     = overrideBaseSize * 0.5f;
+
+                            // Fill and border are drawn first (behind the icon) and are
+                            // always rendered when enabled, even if the icon texture hasn't
+                            // loaded yet — matching how party role icons keep their
+                            // border/shadow visible regardless of whether the job icon resolves.
+                            if (nameOverride.ShowFill || nameOverride.ShowBorder)
+                            {
+                                PushUnclip(dl);
+                                if (nameOverride.ShowFill)
+                                {
+                                    // Three inward-fading circles — identical geometry to the
+                                    // party role icon's drop shadow, creating a soft bloom
+                                    // inward from the icon edge without a real blur pass.
+                                    uint fillU = C(nameOverride.FillColor);
+                                    dl.AddCircleFilled(V(sx, cy), overrideHalf * 0.85f, WithAlpha(fillU, alpha * 0.6f));
+                                    dl.AddCircleFilled(V(sx, cy), overrideHalf * 0.65f, WithAlpha(fillU, alpha * 0.4f));
+                                    dl.AddCircleFilled(V(sx, cy), overrideHalf * 0.45f, WithAlpha(fillU, alpha * 0.2f));
+                                }
+                                if (nameOverride.ShowBorder)
+                                {
+                                    // Solid outer ring just outside the icon bounding box —
+                                    // same geometry and thickness as the party role icon ring
+                                    // (radius = half + 1.0f, stroke width = 3.0f).
+                                    uint brdU = C(nameOverride.BorderColor);
+                                    dl.AddCircle(V(sx, cy), overrideHalf + 1.0f, WithAlpha(brdU, alpha), 0, 3.0f);
+                                }
+                                PopUnclip(dl);
+                            }
+
+                            // UV window: SizeMultiplier > 1 zooms in (trims padding from the
+                            // texture edges), = 1 shows the full texture, < 1 zooms out.
+                            // The quad is always overrideHalf so the icon never escapes the ring.
+                            //   uvHalf = 0.5 / mult  →  mult=1.0: (0,0)→(1,1) full texture
+                            //                           mult=1.5: (1/6,1/6)→(5/6,5/6) cropped in
+                            //                           mult=0.8: (–1/8,–1/8)→(9/8,9/8) zoomed out
+                            bool drewOverrideIcon = false;
+                            if (nameOverride.IconBaseId > 0
+                                && textureProvider.TryGetFromGameIcon(
+                                       new GameIconLookup((uint)nameOverride.IconBaseId), out var overrideTex))
+                            {
+                                float    uvHalf = 0.5f / Math.Max(0.01f, nameOverride.SizeMultiplier);
+                                Vector2  uvMin  = new(0.5f - uvHalf, 0.5f - uvHalf);
+                                Vector2  uvMax  = new(0.5f + uvHalf, 0.5f + uvHalf);
+                                uint     tnt    = WithAlpha(0xFFFFFFFFu, alpha);
+                                var      tex    = overrideTex.GetWrapOrEmpty();
+
+                                PushUnclip(dl);
+                                if (nameOverride.ClipToCircle)
+                                    dl.AddImageRounded(
+                                        tex.Handle,
+                                        V(sx - overrideHalf, cy - overrideHalf),
+                                        V(sx + overrideHalf, cy + overrideHalf),
+                                        uvMin, uvMax, tnt,
+                                        overrideHalf, ImDrawFlags.RoundCornersAll);
+                                else
+                                    dl.AddImage(
+                                        tex.Handle,
+                                        V(sx - overrideHalf, cy - overrideHalf),
+                                        V(sx + overrideHalf, cy + overrideHalf),
+                                        uvMin, uvMax, tnt);
+                                PopUnclip(dl);
+                                drewOverrideIcon = true;
+                            }
+
+                            if (!drewOverrideIcon)
+                            {
+                                // Icon texture not yet loaded or ID is zero — fall back to a
+                                // plain dot so the player remains visible. Use the border color
+                                // as the dot tint when a border is configured (that's the user's
+                                // chosen accent), otherwise fall back to the standard player color.
+                                uint fallbackCol = nameOverride.ShowBorder
+                                    ? C(nameOverride.BorderColor)
+                                    : col;
+                                dl.AddCircleFilled(V(sx, cy), playerR, WithAlpha(fallbackCol, alpha));
+                                dl.AddCircle(V(sx, cy), playerR + 0.8f, WithAlpha(0x66000000u, alpha));
+                            }
                         }
                         else
                         {
-                            // Ring with transparent centre for non-friend, non-party players.
-                            dl.AddCircle(V(sx, cy), playerR, WithAlpha(col, alpha), 0, 2.0f);
-                            dl.AddCircle(V(sx, cy), playerR + 0.8f, WithAlpha(0x33000000u, alpha));
+                            // No override — default friend-dot / hollow-ring rendering.
+                            bool isFriend = config.SolidFriendDots
+                                && obj is ICharacter ch
+                                && (ch.StatusFlags & StatusFlags.Friend) != 0;
+
+                            if (isFriend)
+                            {
+                                dl.AddCircleFilled(V(sx, cy), playerR, WithAlpha(col, alpha));
+                                dl.AddCircle(V(sx, cy), playerR + 0.8f, WithAlpha(0x66000000u, alpha));
+                            }
+                            else
+                            {
+                                // Ring with transparent centre for non-friend, non-party players.
+                                dl.AddCircle(V(sx, cy), playerR, WithAlpha(col, alpha), 0, 2.0f);
+                                dl.AddCircle(V(sx, cy), playerR + 0.8f, WithAlpha(0x33000000u, alpha));
+                            }
                         }
                     }
                 }
@@ -827,7 +942,7 @@ public sealed class CompassHud : IDisposable
     /// given screen position. Returns false (caller should fall back to a plain dot) if
     /// the texture isn't available this frame.
     /// </summary>
-    private bool TryDrawIcon(ImDrawListPtr dl, int iconId, float sx, float cy, float size, float alpha)
+    private bool TryDrawIcon(ImDrawListPtr dl, int iconId, float sx, float cy, float size, float alpha, bool clipToCircle = false)
     {
         if (!textureProvider.TryGetFromGameIcon(new GameIconLookup((uint)iconId), out var sharedTex))
             return false;
@@ -847,13 +962,32 @@ public sealed class CompassHud : IDisposable
         // RenderBar (after its own clip is popped), so they still end up on top of
         // whatever this paints, clipped or not.
         PushUnclip(dl);
-        dl.AddImage(
-            tex.Handle,
-            V(sx - half, cy - half),
-            V(sx + half, cy + half),
-            Vector2.Zero,
-            Vector2.One,
-            tint);
+        if (clipToCircle)
+        {
+            // Rounding = half the bounding box turns the rectangle into a perfect circle.
+            // Uses ImGui's built-in AddImageRounded — no extra render targets or masks
+            // needed. The rounding is applied before the tint multiply so the circular
+            // edge is anti-aliased by ImGui's own path renderer.
+            dl.AddImageRounded(
+                tex.Handle,
+                V(sx - half, cy - half),
+                V(sx + half, cy + half),
+                Vector2.Zero,
+                Vector2.One,
+                tint,
+                half,
+                ImDrawFlags.RoundCornersAll);
+        }
+        else
+        {
+            dl.AddImage(
+                tex.Handle,
+                V(sx - half, cy - half),
+                V(sx + half, cy + half),
+                Vector2.Zero,
+                Vector2.One,
+                tint);
+        }
         PopUnclip(dl);
         return true;
     }
@@ -1122,6 +1256,7 @@ public sealed class CompassHud : IDisposable
     /// TryDrawIcon's image and the party role icon's border/drop-shadow circles, which
     /// need to escape the same clip together or they visually disagree right at the
     /// bar's edge (icon rendering in full while its border/shadow gets cut off).
+    /// Named player override borders/fills use the same pattern for the same reason.
     /// </summary>
     private static void PushUnclip(ImDrawListPtr dl) =>
         dl.PushClipRect(Vector2.Zero, ImGui.GetIO().DisplaySize, false);

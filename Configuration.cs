@@ -1,9 +1,65 @@
 using System;
+using System.Collections.Generic;
 using System.Numerics;
 using Dalamud.Configuration;
 using Dalamud.Plugin;
 
 namespace SkyrimCompass;
+
+/// <summary>
+/// Per-player icon override entry.  When the display name of a nearby player
+/// matches <see cref="PlayerName"/> (exact, case-insensitive) their compass
+/// marker is replaced with a real game icon instead of the normal dot or ring.
+///
+/// Two optional decorations mirror the party-role-icon style:
+///   • <see cref="ShowBorder"/> — a solid outer ring in <see cref="BorderColor"/>.
+///   • <see cref="ShowFill"/>   — three inward-fading filled circles in
+///                                <see cref="FillColor"/> (the same "bloom" effect
+///                                used behind party job icons).
+///
+/// If the icon texture hasn't resolved this frame the entry falls back to a
+/// plain dot so the player remains visible; the border/fill (when enabled) are
+/// always drawn regardless, matching how party role icons work.
+/// </summary>
+[Serializable]
+public class PlayerIconOverride
+{
+    /// <summary>Exact display name to match (case-insensitive).</summary>
+    public string  PlayerName   { get; set; } = "";
+
+    /// <summary>
+    /// Game icon base ID — same numbering as everywhere else in the plugin
+    /// (e.g. 62007 = Paladin, 60453 = main Aetheryte, 61802 = FC emblem).
+    /// </summary>
+    public int     IconBaseId   { get; set; } = 0;
+
+    // ── Optional border ring ──────────────────────────────────────────────────
+    public bool    ShowBorder   { get; set; } = false;
+    public Vector4 BorderColor  { get; set; } = new(1.00f, 1.00f, 1.00f, 0.90f);
+
+    // ── Optional inward fill (like party role icon background) ────────────────
+    public bool    ShowFill     { get; set; } = false;
+    public Vector4 FillColor    { get; set; } = new(1.00f, 1.00f, 1.00f, 0.40f);
+
+    // ── Circle clip ───────────────────────────────────────────────────────────
+    /// <summary>
+    /// When true the icon is rendered with a circular clip (rounding = half the icon
+    /// size) instead of the default square bounding box. Useful for square icon textures
+    /// that look mismatched next to a circular border ring. Uses ImGui's built-in
+    /// AddImageRounded at full rounding so no extra render targets or masks are needed.
+    /// </summary>
+    public bool    ClipToCircle  { get; set; } = false;
+
+    // ── Per-icon size multiplier ──────────────────────────────────────────────
+    /// <summary>
+    /// Extra multiplier applied on top of the global <c>IconSizeMultiplier</c> (1.5×).
+    /// At 1.0 (default) the icon draws at the same apparent scale as a party role icon.
+    /// Raise it for icons whose texture has heavy transparent padding so the visible art
+    /// fills the same space as every other marker; lower it for icons with minimal
+    /// padding that would otherwise appear oversized relative to their neighbours.
+    /// </summary>
+    public float   SizeMultiplier { get; set; } = 1.0f;
+}
 
 [Serializable]
 public class Configuration : IPluginConfiguration
@@ -81,6 +137,15 @@ public class Configuration : IPluginConfiguration
     public float PartyRoleIconMinSize { get; set; } = 10f;
     /// <summary>Same as <see cref="PartyRoleIconMinSize"/> but for very close range.</summary>
     public float PartyRoleIconMaxSize { get; set; } = 24f;
+
+    /// <summary>
+    /// Per-player named overrides that replace a specific player's compass marker with
+    /// a custom game icon, with optional border ring and inward fill decoration.
+    /// Checked after party role icons (which stay highest priority) but before the
+    /// default friend-dot and hollow-ring paths.
+    /// </summary>
+    public List<PlayerIconOverride> PlayerIconOverrides { get; set; } = new();
+
     public bool ShowEnemies       { get; set; } = true;
     /// <summary>
     /// When enabled, only shows hostile enemies that are currently targeting the

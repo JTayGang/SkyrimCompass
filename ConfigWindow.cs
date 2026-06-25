@@ -9,6 +9,19 @@ public sealed class ConfigWindow : Window
 {
     private readonly Plugin plugin;
 
+    // ── Transient state for the "add new player override" form ───────────────
+    // These live on the window instance (not in Configuration) because they're
+    // only needed while the user is typing in the add-new row and never need to
+    // be persisted to disk — they reset to empty each time the entry is committed.
+    private string  _newOverrideName        = "";
+    private int     _newOverrideIconId      = 0;
+    private bool    _newOverrideBorder      = false;
+    private Vector4 _newOverrideBorderColor = new(1.00f, 1.00f, 1.00f, 0.90f);
+    private bool    _newOverrideFill        = false;
+    private Vector4 _newOverrideFillColor   = new(1.00f, 1.00f, 1.00f, 0.40f);
+    private bool    _newOverrideClipToCircle  = false;
+    private float   _newOverrideSizeMultiplier = 1.0f;
+
     public ConfigWindow(Plugin plugin)
         : base("Skyrim Compass Settings##skyrimcompasscfg",
                ImGuiWindowFlags.AlwaysAutoResize | ImGuiWindowFlags.NoScrollbar)
@@ -38,7 +51,7 @@ public sealed class ConfigWindow : Window
             changed |= DrawLayoutTab(cfg);
             changed |= DrawColorsTab(cfg);
             changed |= DrawDetectionTab(cfg);
-            changed |= DrawPlayersTab(cfg);
+            changed |= DrawPlayersTab(cfg);   // instance method — needs _newOverride* fields
             changed |= DrawEnemiesTab(cfg);
             changed |= DrawNpcsTab(cfg);
             changed |= DrawGatheringTab(cfg);
@@ -238,8 +251,10 @@ public sealed class ConfigWindow : Window
     }
 
     // ── Players tab ──────────────────────────────────────────────────────────
+    // This is the one tab that's NOT static — it needs access to the _newOverride*
+    // instance fields that hold the transient "add new entry" form state.
 
-    private static bool DrawPlayersTab(Configuration cfg)
+    private bool DrawPlayersTab(Configuration cfg)
     {
         if (!ImGui.BeginTabItem("Players")) return false;
         bool    changed = false;
@@ -274,7 +289,8 @@ public sealed class ConfigWindow : Window
                 "Players on your friends list render as a solid filled dot instead\n" +
                 "of the default hollow ring, making them stand out in a crowd.\n" +
                 "Uses the same friend flag the game's minimap and nameplates read from.\n" +
-                "Has no effect on party members when role icons are enabled below.");
+                "Has no effect on party members when role icons are enabled below.\n" +
+                "Has no effect on players who have a named override below.");
 
         bool pri = cfg.ShowPartyRoleIcons;
         if (ImGui.Checkbox("Show job icon for party members##pri", ref pri))
@@ -283,10 +299,203 @@ public sealed class ConfigWindow : Window
             ImGui.SetTooltip(
                 "Party members show their unbordered class/job icon (IDs 62001-62047)\n" +
                 "on a role-colored background dot: Tank=blue, Healer=green, DPS=red.\n" +
-                "Takes priority over the solid friend dot above for anyone in your party.\n" +
+                "Takes priority over the solid friend dot above and over named overrides\n" +
+                "below for anyone in your party.\n" +
                 "Uses the same size slider above as every other player marker.");
 
+        // ── Named player icon overrides ───────────────────────────────────────
+        ImGui.Spacing();
+        ImGui.Separator();
+        ImGui.Spacing();
+
+        ImGui.TextDisabled("Named player overrides");
+        if (ImGui.IsItemHovered())
+            ImGui.SetTooltip(
+                "Replace the compass marker for specific players (by display name) with\n" +
+                "a custom game icon — uses the same game icon base IDs as everywhere\n" +
+                "else in the plugin (e.g. 62007 Paladin, 60453 Aetheryte, 61802 FC).\n" +
+                "Browse all available icons and their IDs with: /xldata icons\n" +
+                "Name match is exact and case-insensitive.\n" +
+                "Party role icons still take priority over these for anyone in your party.\n" +
+                "B = outer border ring.  F = inward-fading fill behind icon\n" +
+                "  (same bloom effect used behind party job icons).\n" +
+                "Both border and fill remain visible even if the icon hasn't loaded yet.");
+
+        if (cfg.PlayerIconOverrides.Count == 0)
+        {
+            ImGui.TextDisabled("  (no overrides — add one below)");
+        }
+
+        // ── Existing entries (one editable row each) ──────────────────────────
+        int removeAt = -1;
+        for (int i = 0; i < cfg.PlayerIconOverrides.Count; i++)
+        {
+            var ov = cfg.PlayerIconOverrides[i];
+            ImGui.PushID(i);
+
+            // [X] remove button
+            if (ImGui.Button("X##rmov"))
+                removeAt = i;
+            if (ImGui.IsItemHovered())
+                ImGui.SetTooltip("Remove this override");
+            ImGui.SameLine();
+
+            // Editable player name
+            string ovName = ov.PlayerName;
+            ImGui.SetNextItemWidth(110f);
+            if (ImGui.InputText("##ovname", ref ovName, 64))
+            { ov.PlayerName = ovName; changed = true; }
+            if (ImGui.IsItemHovered())
+                ImGui.SetTooltip("Player display name (exact, case-insensitive)");
+            ImGui.SameLine();
+
+            // Icon base ID — no step arrows, 5-digit IDs are easier to type directly
+            int ovId = ov.IconBaseId;
+            ImGui.SetNextItemWidth(68f);
+            if (ImGui.InputInt("##ovid", ref ovId, 0, 0))
+            { ov.IconBaseId = Math.Max(0, ovId); changed = true; }
+            if (ImGui.IsItemHovered())
+                ImGui.SetTooltip("Game icon base ID\n(e.g. 62007 Paladin, 60453 Aetheryte, 61802 FC emblem)\nBrowse all icons with: /xldata icons");
+            ImGui.SameLine();
+
+            // Border checkbox + color swatch
+            bool ovBorder = ov.ShowBorder;
+            if (ImGui.Checkbox("B##ovb", ref ovBorder))
+            { ov.ShowBorder = ovBorder; changed = true; }
+            if (ImGui.IsItemHovered())
+                ImGui.SetTooltip("Draw a solid outer ring around the icon");
+            ImGui.SameLine();
+            ImGui.BeginDisabled(!ov.ShowBorder);
+            Vector4 ovBc = ov.BorderColor;
+            if (ImGui.ColorEdit4("##ovbc", ref ovBc, ColorPickerFlags))
+            { ov.BorderColor = ovBc; changed = true; }
+            if (ImGui.IsItemHovered())
+                ImGui.SetTooltip("Border ring color");
+            ImGui.EndDisabled();
+            ImGui.SameLine();
+
+            // Fill checkbox + color swatch
+            bool ovFill = ov.ShowFill;
+            if (ImGui.Checkbox("F##ovf", ref ovFill))
+            { ov.ShowFill = ovFill; changed = true; }
+            if (ImGui.IsItemHovered())
+                ImGui.SetTooltip("Draw an inward-fading fill behind the icon\n(same bloom effect as party role icon backgrounds)");
+            ImGui.SameLine();
+            ImGui.BeginDisabled(!ov.ShowFill);
+            Vector4 ovFc = ov.FillColor;
+            if (ImGui.ColorEdit4("##ovfc", ref ovFc, ColorPickerFlags))
+            { ov.FillColor = ovFc; changed = true; }
+            if (ImGui.IsItemHovered())
+                ImGui.SetTooltip("Fill color");
+            ImGui.EndDisabled();
+            ImGui.SameLine();
+
+            // Circle clip — rounds the icon to match the border ring shape
+            bool ovClip = ov.ClipToCircle;
+            if (ImGui.Checkbox("○##ovcirc", ref ovClip))
+            { ov.ClipToCircle = ovClip; changed = true; }
+            if (ImGui.IsItemHovered())
+                ImGui.SetTooltip(
+                    "Clip icon to a circle\n" +
+                    "Rounds square icon textures to fit neatly inside the border ring.\n" +
+                    "Uses ImGui's built-in rounded image rendering — no extra cost.");
+            ImGui.SameLine();
+
+            // Per-icon size multiplier — stacks on top of the global 1.5× compensation
+            float ovMul = ov.SizeMultiplier;
+            ImGui.SetNextItemWidth(58f);
+            if (ImGui.DragFloat("##ovmul", ref ovMul, 0.05f, 0.5f, 3.0f, "%.2fx"))
+            { ov.SizeMultiplier = Math.Clamp(ovMul, 0.5f, 3.0f); changed = true; }
+            if (ImGui.IsItemHovered())
+                ImGui.SetTooltip(
+                    "Per-icon size multiplier (stacks on top of the global 1.5× padding compensation).\n" +
+                    "1.0 = same apparent size as a party role icon.\n" +
+                    "Drag right for icons with heavy transparent padding,\n" +
+                    "drag left for icons with minimal padding that look oversized.");
+
+            ImGui.PopID();
+        }
+
+        if (removeAt >= 0)
+        { cfg.PlayerIconOverrides.RemoveAt(removeAt); changed = true; }
+
+        // ── Add new override ──────────────────────────────────────────────────
+        ImGui.Spacing();
+        ImGui.TextDisabled("Add override:");
+        ImGui.SameLine();
+
+        ImGui.SetNextItemWidth(120f);
+        ImGui.InputText("##newovname", ref _newOverrideName, 64);
+        if (ImGui.IsItemHovered())
+            ImGui.SetTooltip("Player display name to match");
+        ImGui.SameLine();
+
+        ImGui.SetNextItemWidth(68f);
+        ImGui.InputInt("##newovid", ref _newOverrideIconId, 0, 0);
+        _newOverrideIconId = Math.Max(0, _newOverrideIconId);
+        if (ImGui.IsItemHovered())
+            ImGui.SetTooltip("Game icon base ID\n(e.g. 62007 Paladin, 60453 Aetheryte, 61802 FC emblem)\nBrowse all icons with: /xldata icons");
+        ImGui.SameLine();
+
+        if (ImGui.Checkbox("B##newovb", ref _newOverrideBorder)) { }
+        if (ImGui.IsItemHovered())
+            ImGui.SetTooltip("Border ring");
+        ImGui.SameLine();
+        ImGui.BeginDisabled(!_newOverrideBorder);
+        ImGui.ColorEdit4("##newovbc", ref _newOverrideBorderColor, ColorPickerFlags);
+        if (ImGui.IsItemHovered())
+            ImGui.SetTooltip("Border color");
         ImGui.EndDisabled();
+        ImGui.SameLine();
+
+        if (ImGui.Checkbox("F##newovf", ref _newOverrideFill)) { }
+        if (ImGui.IsItemHovered())
+            ImGui.SetTooltip("Inward fill");
+        ImGui.SameLine();
+        ImGui.BeginDisabled(!_newOverrideFill);
+        ImGui.ColorEdit4("##newovfc", ref _newOverrideFillColor, ColorPickerFlags);
+        if (ImGui.IsItemHovered())
+            ImGui.SetTooltip("Fill color");
+        ImGui.EndDisabled();
+        ImGui.SameLine();
+
+        if (ImGui.Checkbox("○##newovcirc", ref _newOverrideClipToCircle)) { }
+        if (ImGui.IsItemHovered())
+            ImGui.SetTooltip("Clip icon to circle");
+        ImGui.SameLine();
+
+        ImGui.SetNextItemWidth(58f);
+        ImGui.DragFloat("##newovmul", ref _newOverrideSizeMultiplier, 0.05f, 0.5f, 3.0f, "%.2fx");
+        _newOverrideSizeMultiplier = Math.Clamp(_newOverrideSizeMultiplier, 0.5f, 3.0f);
+        if (ImGui.IsItemHovered())
+            ImGui.SetTooltip("Per-icon size multiplier");
+        ImGui.SameLine();
+
+        bool canAdd = !string.IsNullOrWhiteSpace(_newOverrideName) && _newOverrideIconId > 0;
+        ImGui.BeginDisabled(!canAdd);
+        if (ImGui.Button("Add##addov"))
+        {
+            cfg.PlayerIconOverrides.Add(new PlayerIconOverride
+            {
+                PlayerName    = _newOverrideName.Trim(),
+                IconBaseId    = _newOverrideIconId,
+                ShowBorder    = _newOverrideBorder,
+                BorderColor   = _newOverrideBorderColor,
+                ShowFill      = _newOverrideFill,
+                FillColor     = _newOverrideFillColor,
+                ClipToCircle  = _newOverrideClipToCircle,
+                SizeMultiplier = _newOverrideSizeMultiplier,
+            });
+            // Reset form for the next entry
+            _newOverrideName        = "";
+            _newOverrideIconId      = 0;
+            changed = true;
+        }
+        ImGui.EndDisabled();
+        if (!canAdd && ImGui.IsItemHovered(ImGuiHoveredFlags.AllowWhenDisabled))
+            ImGui.SetTooltip("Enter a player name and a non-zero icon ID to enable");
+
+        ImGui.EndDisabled(); // !cfg.ShowPlayers
         ImGui.Unindent();
 
         ImGui.EndTabItem();
