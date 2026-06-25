@@ -313,10 +313,19 @@ public sealed class CompassHud : IDisposable
         // Top bevel
         dl.AddLine(V(bx + 1f, by + 1f), V(bx + bw - 1f, by + 1f), 0x1AFFFFFF, 1f);
 
-        // ── 2. Clip to bar ────────────────────────────────────────────────────
+        // ── 2. Bar border ──────────────────────────────────────────────────────
+        // Drawn here (before markers/icons) rather than after them so anything that
+        // overlaps it — most notably icons, which can now render past the bar's clip
+        // rect (see TryDrawIcon) and are frequently taller than the bar itself — paints
+        // over the border instead of the border cutting a line across the icon. Ticks
+        // and labels below are unaffected either way since their own clip keeps them
+        // 1px inside this border's edge, never actually touching it.
+        dl.AddRect(V(bx, by), V(bx + bw, by + bh), borderCol, 0f, ImDrawFlags.None, 1.5f);
+
+        // ── 3. Clip to bar ────────────────────────────────────────────────────
         dl.PushClipRect(V(bx + 1f, by), V(bx + bw - 1f, by + bh), true);
 
-        // ── 3. Tick marks (every 5°, using lens projection) ──────────────────
+        // ── 4. Tick marks (every 5°, using lens projection) ──────────────────
         for (int d = 0; d < 360; d += 5)
         {
             float delta = Delta(heading, d);
@@ -343,7 +352,7 @@ public sealed class CompassHud : IDisposable
                 is90 ? 2f : 1f);
         }
 
-        // ── 4. Direction labels (upper band, lens-projected) ──────────────────
+        // ── 5. Direction labels (upper band, lens-projected) ──────────────────
         float fontSize = ImGui.GetFontSize() * config.FontScale;
         var   font     = ImGui.GetFont();
 
@@ -366,7 +375,7 @@ public sealed class CompassHud : IDisposable
             dl.AddText(font, fontSize, V(tx, ty), labelCol, label);
         }
 
-        // ── 5. Entity markers (centred, lens-projected, alpha-faded) ─────────
+        // ── 6. Entity markers (centred, lens-projected, alpha-faded) ─────────
         if (config.ShowAnyMarkers)
             RenderMarkers(dl, cx, cy, halfVis, barHalfW, lensStr, heading, player, originPos);
 
@@ -375,9 +384,6 @@ public sealed class CompassHud : IDisposable
         RenderFates(dl, cx, cy, halfVis, barHalfW, lensStr, heading, originPos);
 
         dl.PopClipRect();
-
-        // ── 6. Bar border ─────────────────────────────────────────────────────
-        dl.AddRect(V(bx, by), V(bx + bw, by + bh), borderCol, 0f, ImDrawFlags.None, 1.5f);
 
         // ── 7. End-cap FILLS — opaque so they mask ticks/dots at the edges ───
         dl.AddQuadFilled(V(bx,          cy - capHH), V(bx + capHW, cy),            V(bx,          cy + capHH), V(bx - capHW, cy),            solidBgCol);
@@ -465,7 +471,12 @@ public sealed class CompassHud : IDisposable
             float r    = 3f + 7f * t;
 
             // Three-zone alpha curve, shared with RenderFates — see ComputeFadeAlpha.
-            float alpha = ComputeFadeAlpha(t);
+            // Multiplied by the same edge fade ticks/labels use (LensEdgeAlpha) so
+            // markers ease out to fully transparent by extHalf instead of hard-cutting
+            // off — previously there was no fade here at all, just the hard `continue`
+            // above, which was tolerable for small clipped dots but became obvious once
+            // icons grew large enough to render past the bar's edge unclipped.
+            float alpha = ComputeFadeAlpha(t) * LensEdgeAlpha(delta, halfVis, extHalf);
 
             // Categories with a real game icon available get that instead of a plain
             // dot — the icon ID and its min/max size range both depend on which
@@ -529,8 +540,8 @@ public sealed class CompassHud : IDisposable
                 if (obj.ObjectKind == ObjectKind.Pc)
                 {
                     // Drives EVERY player marker below — plain ring, solid friend dot,
-                    // and the party role icon + its background dot — so the Players
-                    // page's size slider controls all of them together.
+                    // and the party role icon + its drop shadow — so the Players page's
+                    // size slider controls all of them together.
                     float playerSize = config.PartyRoleIconMinSize
                                       + (config.PartyRoleIconMaxSize - config.PartyRoleIconMinSize) * t;
                     float playerR    = playerSize * 0.5f;
@@ -548,18 +559,26 @@ public sealed class CompassHud : IDisposable
 
                         if (jobIconId > 0)
                         {
-                            // Role-colored background dot — Tank=blue, Healer=green,
-                            // DPS=red, DoH/DoL=gray. Colors match FFXIV's own role UI.
-                            // Stays at the unpadded playerR so it still represents the
-                            // equivalent plain-dot size; only the icon glyph drawn over
-                            // it gets the padding offset below.
-                            uint roleCol = GetRoleColor(partyChar);
-                            dl.AddCircleFilled(V(sx, cy), playerR, WithAlpha(roleCol, alpha));
+                            // Role-colored border + drop shadow behind the job icon —
+                            // Tank=blue, Healer=green, DPS=red, DoH/DoL=gray. Colors match
+                            // FFXIV's own role UI. The outer ring is the solid border,
+                            // sitting just past the icon's edge same as before. Behind
+                            // that, three filled circles step inward and fade out —
+                            // most visible right at the border, nearly gone by the centre
+                            // — faking a soft shadow falling inward from the border since
+                            // ImGui's draw list has no blur filter to do this for real.
+                            uint  roleCol      = GetRoleColor(partyChar);
+                            float iconDrawSize = playerSize * IconSizeMultiplier;
+                            float iconHalf     = iconDrawSize * 0.5f;
+                            dl.AddCircle(V(sx, cy), iconHalf + 1.0f, WithAlpha(roleCol, alpha), 0, 3.0f);
+                            dl.AddCircleFilled(V(sx, cy), iconHalf * 0.85f, WithAlpha(roleCol, alpha * 0.6f));
+                            dl.AddCircleFilled(V(sx, cy), iconHalf * 0.65f, WithAlpha(roleCol, alpha * 0.4f));
+                            dl.AddCircleFilled(V(sx, cy), iconHalf * 0.45f, WithAlpha(roleCol, alpha * 0.2f));
 
-                            // Job icon drawn on top — if the icon ID doesn't resolve
-                            // (e.g. a future job beyond the known range), the colored
-                            // dot still shows as a useful fallback.
-                            TryDrawIcon(dl, jobIconId, sx, cy, playerSize * IconSizeMultiplier, alpha);
+                            // Job icon drawn on top — if the icon ID doesn't resolve to a
+                            // loadable texture (e.g. a future job beyond the known range),
+                            // the role-colored border/shadow still shows as a useful fallback.
+                            TryDrawIcon(dl, jobIconId, sx, cy, iconDrawSize, alpha);
                             drewJobIcon = true;
                         }
                     }
@@ -597,8 +616,11 @@ public sealed class CompassHud : IDisposable
                                   + (config.NpcQuestIconMaxSize - config.NpcQuestIconMinSize) * t;
                     float npcR    = npcSize * 0.5f;
 
-                    dl.AddCircleFilled(V(sx, cy), npcR, WithAlpha(col, alpha));
-                    dl.AddCircle(V(sx, cy), npcR + 0.8f, WithAlpha(0x66000000u, alpha));
+                    // Hollow ring instead of a filled disc — matches the non-friend
+                    // player marker style below, which reads more clearly against
+                    // busy backgrounds than a solid dot.
+                    dl.AddCircle(V(sx, cy), npcR, WithAlpha(col, alpha), 0, 2.0f);
+                    dl.AddCircle(V(sx, cy), npcR + 0.8f, WithAlpha(0x33000000u, alpha));
                 }
                 else if (obj.ObjectKind == ObjectKind.BattleNpc)
                 {
@@ -703,7 +725,10 @@ public sealed class CompassHud : IDisposable
             float dist = MathF.Sqrt(dsq);
             float t    = 1f - dist / config.MaxFateDistance;   // 1 = close, 0 = at max range
             float iconSize = config.FateIconMinSize + (config.FateIconMaxSize - config.FateIconMinSize) * t;
-            float alpha     = ComputeFadeAlpha(t);
+            // Same edge fade as RenderMarkers — FATEs render exclusively as icons, so
+            // they're exactly the case that used to hard-cut at the bar's edge with no
+            // fade at all.
+            float alpha    = ComputeFadeAlpha(t) * LensEdgeAlpha(delta, halfVis, extHalf);
 
             bool drewIcon = fate.IconId > 0 && TryDrawIcon(dl, (int)fate.IconId, sx, cy, iconSize, alpha);
 
@@ -732,6 +757,16 @@ public sealed class CompassHud : IDisposable
         float half = size * 0.5f;
         uint  tint = WithAlpha(0xFFFFFFFFu, alpha);
 
+        // RenderBar clips everything drawn in this pass to the bar's own rectangle —
+        // fine for plain dots, but icons near the left/right edge of the visible FOV
+        // can have a bounding box wider than the bar (especially with
+        // IconSizeMultiplier/AetheryteIconSizeMultiplier inflating icon sizes), so that
+        // clip was hard-cutting them right at the bar's edge. Briefly push a full-display,
+        // non-intersecting clip rect just for this one image so it draws in full. This
+        // doesn't change paint order — the end-cap diamonds are drawn afterward in
+        // RenderBar (after its own clip is popped), so they still end up on top of
+        // whatever this paints, clipped or not.
+        dl.PushClipRect(Vector2.Zero, ImGui.GetIO().DisplaySize, false);
         dl.AddImage(
             tex.Handle,
             V(sx - half, cy - half),
@@ -739,6 +774,7 @@ public sealed class CompassHud : IDisposable
             Vector2.Zero,
             Vector2.One,
             tint);
+        dl.PopClipRect();
         return true;
     }
 
