@@ -18,7 +18,7 @@ https://raw.githubusercontent.com/JTayGang/SkyrimCompass/main/repo.json
 |---|---|
 | 🧭 | Scrolling N / NE / E / SE / S / SW / W / NW labels with degree tick marks |
 | 🔴 | Enemy markers (with in-combat only option) |
-| 🔵 | Player markers, Friend markers, **Can use any vanilla icons!** |
+| 🔵 | Players, Friends, Party members with role/class, **Can also use any vanilla icons!** |
 | 🟢 | Gathering node markers (Mining / Botany) |
 | 🟡 | Treasure coffer markers |
 | ⚙️ | Fully configurable size, position, colours, visible arc, marker range, and more! |
