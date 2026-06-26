@@ -1,7 +1,7 @@
 # Skyrim Compass — Dalamud Plugin for FFXIV
 
-A Dalamud plugin that renders a **Skyrim-style horizontal compass bar** at the top of
-your screen, giving you clean directional awareness without needing the minimap.
+Renders a **Skyrim-style** horizontal compass at the top of
+your screen, aiming to replace and combine the minimap and various other hud elements into one while being aesthetic.
 
 ---
 
@@ -17,11 +17,11 @@ https://raw.githubusercontent.com/JTayGang/SkyrimCompass/main/repo.json
 | | |
 |---|---|
 | 🧭 | Scrolling N / NE / E / SE / S / SW / W / NW labels with degree tick marks |
-| 🔴 | Nearby enemy markers (hostile BattleNPCs only) |
-| 🔵 | Nearby player markers |
+| 🔴 | Enemy markers (with in-combat only option) |
+| 🔵 | Player markers, Friend markers, **Can use any vanilla icons!** |
 | 🟢 | Gathering node markers (Mining / Botany) |
 | 🟡 | Treasure coffer markers |
-| ⚙️ | Fully configurable size, position, colours, visible arc, and marker range |
+| ⚙️ | Fully configurable size, position, colours, visible arc, marker range, and more! |
 
 ---
 
