@@ -13,6 +13,7 @@ using Dalamud.Plugin.Services;
 using Dalamud.Bindings.ImGui;
 using FFXIVClientStructs.FFXIV.Client.Game;
 using FFXIVClientStructs.FFXIV.Client.Game.Control;
+using FFXIVClientStructs.FFXIV.Client.Game.UI;
 using Lumina.Excel;
 using Lumina.Excel.Sheets;
 
@@ -34,6 +35,15 @@ public sealed class CompassHud : IDisposable
     private readonly Configuration config;
     private readonly IPluginLog log;
     private readonly IFontHandle jupiterFont;
+
+    // TEMPORARY DEBUG AID — lets the Combat tab's "Force LB1/2/3" checkboxes
+    // preview each glow tier without actually charging limit break in a duty.
+    // 0 = off (read the real game state via GetLimitBreakReadyLevel as normal).
+    // Static + public so ConfigWindow can poke it directly without plumbing a
+    // reference through Plugin. Safe to delete this field, the ConfigWindow
+    // checkboxes that set it, and the one ternary in RenderBar that reads it
+    // once the glow visuals are dialed in — nothing else depends on it.
+    public static int DebugForceLimitBreakLevel = 0;
 
     // GameObjectId -> current nameplate marker icon ID (quest/etc.), refreshed every
     // nameplate update. 0/absent = no active marker.
@@ -269,6 +279,16 @@ public sealed class CompassHud : IDisposable
         float capHW = bh * 0.44f;
         float capHH = bh * 0.64f;
 
+        // Limit break tier (0-3) + glow color — used a bit further down, once the
+        // border itself has been drawn (so the glow traces over/around it rather
+        // than sitting underneath the whole bar). DebugForceLimitBreakLevel (see
+        // field doc above) takes priority over the real read when set, so the
+        // Combat tab's debug checkboxes can preview any tier on demand.
+        int lbReady = config.ShowLimitBreakGlow
+            ? (DebugForceLimitBreakLevel > 0 ? DebugForceLimitBreakLevel : GetLimitBreakReadyLevel())
+            : 0;
+        uint lbGlowCol = C(config.LimitBreakGlowColor);
+
         // ── 1. Main bar background ────────────────────────────────────────────
         dl.AddRectFilled(V(bx, by), V(bx + bw, by + bh), bgCol);
 
@@ -291,7 +311,31 @@ public sealed class CompassHud : IDisposable
         // other way round.
         dl.AddRect(V(bx, by), V(bx + bw, by + bh), borderCol, 0f, ImDrawFlags.None, 1.5f);
 
-        // ── 3. Clip to bar ────────────────────────────────────────────────────
+        // ── 3. Limit break border glow ────────────────────────────────────────
+        // Skyrim-style: a glowing bracket creeps in from each end of the border
+        // toward the centre as charge builds, meeting in the middle at a full
+        // 3-bar break. 1 bar = the outer 1/6 of the border from each end, 2 bars
+        // = the outer 1/3 from each end, 3 bars = both halves meet → whole border.
+        if (lbReady >= 1)
+        {
+            // Intensity undulates instead of holding steady — a slow ~8s breath
+            // times a faster ~2s shimmer. Co-prime-ish frequencies (0.79/3.23)
+            // keep the combined waveform from ever quite repeating, so the pulse
+            // reads as organic rather than a metronome. Floors kept high (0.50/
+            // 0.84 lows, not lower) so the glow stays clearly visible throughout
+            // the cycle instead of dimming down near-invisible at the bottom.
+            float glowT    = (float)ImGui.GetTime();
+            float breathe  = 0.75f + 0.25f * MathF.Sin(glowT * 0.79f);
+            float shimmer  = 0.92f + 0.08f * MathF.Sin(glowT * 3.23f + 1.17f);
+            float intensity = breathe * shimmer;
+
+            float frac = lbReady >= 3 ? 0.5f : lbReady == 2 ? 1f / 3f : 1f / 6f;
+            float segW = bw * frac;
+            DrawBorderGlowBracket(dl, bx, by, bw, bh, segW, lbGlowCol, intensity, glowT, fromLeft: true);
+            DrawBorderGlowBracket(dl, bx, by, bw, bh, segW, lbGlowCol, intensity, glowT, fromLeft: false);
+        }
+
+        // ── 4. Clip to bar ────────────────────────────────────────────────────
         dl.PushClipRect(V(bx + 1f, by), V(bx + bw - 1f, by + bh), true);
 
         // Push Jupiter — FFXIV's ornate serif heading font — for the Skyrim feel.
@@ -317,7 +361,7 @@ public sealed class CompassHud : IDisposable
         const float tickLabelGap = 0f;
         float maxTickHeight = MathF.Max(2f, (by + bh - 1f) - (labelBottom + tickLabelGap));
 
-        // ── 4. Tick marks (every 5°, using lens projection) ──────────────────
+        // ── 5. Tick marks (every 5°, using lens projection) ──────────────────
         for (int d = 0; d < 360; d += 5)
         {
             float delta = Delta(heading, d);
@@ -345,7 +389,7 @@ public sealed class CompassHud : IDisposable
                 is90 ? 2f : 1f);
         }
 
-        // ── 5. Direction labels (upper band, lens-projected) ──────────────────
+        // ── 6. Direction labels (upper band, lens-projected) ──────────────────
         foreach (var (deg, label, isMajor) in Directions)
         {
             float delta = Delta(heading, deg);
@@ -366,7 +410,7 @@ public sealed class CompassHud : IDisposable
         }
         // jupiterScope disposed here → Jupiter automatically popped
 
-        // ── 6. Entity markers + FATEs (single sorted pass) ───────────────────
+        // ── 7. Entity markers + FATEs (single sorted pass) ───────────────────
         // Both types share one candidate list and sort so closer items always paint
         // on top regardless of type. Game objects are gated behind ShowAnyMarkers;
         // FATEs use their own ShowFates flag and are unaffected by that toggle.
@@ -374,20 +418,20 @@ public sealed class CompassHud : IDisposable
 
         dl.PopClipRect();
 
-        // ── 7. End-cap FILLS — opaque so they mask ticks/dots at the edges ───
+        // ── 8. End-cap FILLS — opaque so they mask ticks/dots at the edges ───
         dl.AddQuadFilled(V(bx,          cy - capHH), V(bx + capHW, cy),            V(bx,          cy + capHH), V(bx - capHW, cy),            solidBgCol);
         dl.AddQuadFilled(V(bx + bw,     cy - capHH), V(bx + bw + capHW, cy),       V(bx + bw,     cy + capHH), V(bx + bw - capHW, cy),       solidBgCol);
 
-        // ── 8. End-cap OUTLINES on top ────────────────────────────────────────
+        // ── 9. End-cap OUTLINES on top ────────────────────────────────────────
         DrawEndCapOutlines(dl, bx,      cy, capHW, capHH, borderCol);
         DrawEndCapOutlines(dl, bx + bw, cy, capHW, capHH, borderCol);
 
-        // ── 9. Centre notch ───────────────────────────────────────────────────
+        // ── 10. Centre notch ──────────────────────────────────────────────────
         const float nH = 10f, nW = 6f;
         dl.AddTriangleFilled(V(cx + 1f, by + nH + 2f), V(cx - nW + 1f, by + 1f), V(cx + nW + 1f, by + 1f), 0x55000000u);
         dl.AddTriangleFilled(V(cx,      by + nH + 1f), V(cx - nW,       by),      V(cx + nW,       by),      0xF2FFFFFFu);
 
-        // ── 10. Numeric heading ───────────────────────────────────────────────
+        // ── 11. Numeric heading ───────────────────────────────────────────────
         if (config.ShowHeadingText)
         {
             string txt = $"{(int)heading:000}°";
@@ -408,6 +452,136 @@ public sealed class CompassHud : IDisposable
         dl.AddQuad(V(cx, cy - hh * s), V(cx + hw * s, cy), V(cx, cy + hh * s), V(cx - hw * s, cy), innerCol, 1f);
 
         dl.AddCircleFilled(V(cx, cy), 2.5f, color);
+    }
+
+    // ── Limit break glow helpers ───────────────────────────────────────────────
+
+    /// <summary>
+    /// A soft glowing ribbon along a segment: instead of a straight stroke, the
+    /// path bends perpendicular to itself by a travelling sine wave — like a
+    /// flag rippling, or an audio waveform. The wobble isn't uniform along the
+    /// segment: it's pinned flat at the end nearest the bar's corner (hidden
+    /// behind the diamond end-cap anyway, so a static anchor reads naturally),
+    /// then ramps up in both amplitude and "chaos" — a second, faster sine
+    /// blended in, plus a shortening wavelength — toward the other end, which
+    /// reaches in toward the bar's centre (where the two brackets eventually
+    /// meet at a full break). <paramref name="fromLeft"/> says which of
+    /// <paramref name="a"/>/<paramref name="b"/> is the anchored corner, so the
+    /// ramp runs the right way regardless of which physical point that is, and
+    /// also sets which direction the ripple travels — see
+    /// <see cref="DrawBorderGlowBracket"/> for why the two sides mirror.
+    /// </summary>
+    private static void DrawGlowLine(ImDrawListPtr dl, Vector2 a, Vector2 b, uint col, float intensity, float t, bool fromLeft)
+    {
+        Vector2 delta = b - a;
+        float   len   = delta.Length();
+        if (len < 1f) return;
+
+        Vector2 dir  = delta / len;
+        Vector2 perp = new(-dir.Y, dir.X);   // 90° to the segment — the bend axis
+
+        const float amplitude    = 4.0f;   // px of perpendicular bend at full chaos
+        const float waveLenLong  = 130f;   // px/cycle right at the anchored corner — long & smooth
+        const float waveLenShort = 22f;    // px/cycle at the inner, "chaotic" tip
+        const float flowSpeed    = 2.0f;   // rad/s the ripple travels at
+
+        // Mirrors the two sides so the ripple flows toward the centre on both,
+        // instead of both drifting the same way across the whole bar.
+        float flowDir = fromLeft ? -1f : 1f;
+
+        int samples = Math.Clamp((int)(len / waveLenShort * 4f) + 2, 3, 96);
+        var pts = new Vector2[samples];
+
+        float phase     = 0f;
+        float prevAlong = 0f;
+        for (int i = 0; i < samples; i++)
+        {
+            float along = len * i / (samples - 1);
+
+            // 0 right at the anchored corner, 1 at the inner tip reaching toward
+            // the bar's centre — whichever of a/b that is depends on fromLeft.
+            float u = fromLeft ? along / len : 1f - along / len;
+
+            // Locally-varying frequency, integrated step by step rather than
+            // applied as a flat along*freq (which would only be valid for a
+            // constant frequency) — keeps the phase continuous as it shortens.
+            float freq = Lerp(2f * MathF.PI / waveLenLong, 2f * MathF.PI / waveLenShort, u);
+            phase += freq * (along - prevAlong);
+            prevAlong = along;
+
+            float envelope  = u * u * (3f - 2f * u);     // smoothstep ramp: 0 → 1
+            float timePhase = t * flowSpeed * flowDir;
+
+            float wave1 = MathF.Sin(phase + timePhase);
+            float wave2 = MathF.Sin(phase * 2.6f + timePhase * 1.5f + 1.3f);
+            float wave  = wave1 * (1f - 0.5f * u) + wave2 * (0.5f * u);   // more chaotic as u→1
+
+            pts[i] = a + dir * along + perp * (amplitude * envelope * wave);
+        }
+
+        ReadOnlySpan<(float alpha, float thickness)> layers =
+        [
+            (0.05f, 14f),
+            (0.10f, 10f),
+            (0.18f,  6f),
+            (0.32f,  3.5f),
+            (0.70f,  1.8f),
+        ];
+        foreach (var (alpha, thickness) in layers)
+        {
+            uint c = WithAlpha(col, alpha * intensity);
+            for (int i = 0; i < samples - 1; i++)
+                dl.AddLine(pts[i], pts[i + 1], c, thickness);
+        }
+    }
+
+    /// <summary>
+    /// One Skyrim-style "bracket" of border glow: <paramref name="segW"/> of
+    /// the top and bottom edges reaching in from one end of the bar — picture
+    /// a "[" (or, mirrored, a "]"), minus its vertical stroke, since that edge
+    /// sits right behind the diamond end-cap and is never actually visible.
+    /// Two of these, one per end via <paramref name="fromLeft"/>, are how all
+    /// three limit-break tiers are built: a bigger <paramref name="segW"/> just
+    /// reaches further in, and at segW = bw/2 the two brackets meet in the
+    /// middle and together trace the whole top/bottom border. <paramref
+    /// name="intensity"/>, <paramref name="t"/>, and <paramref name="fromLeft"/>
+    /// all pass straight through to <see cref="DrawGlowLine"/>.
+    /// </summary>
+    private static void DrawBorderGlowBracket(
+        ImDrawListPtr dl, float bx, float by, float bw, float bh, float segW, uint col, float intensity, float t, bool fromLeft)
+    {
+        float x0 = fromLeft ? bx : bx + bw - segW;
+        float x1 = fromLeft ? bx + segW : bx + bw;
+
+        DrawGlowLine(dl, V(x0, by),      V(x1, by),      col, intensity, t, fromLeft);   // top edge segment
+        DrawGlowLine(dl, V(x0, by + bh), V(x1, by + bh), col, intensity, t, fromLeft);   // bottom edge segment
+    }
+
+    /// <summary>
+    /// How many limit-break bars are currently charged: 0 (none) – 3 (full break
+    /// ready). Reads UIState's native LimitBreakController directly — there's no
+    /// Dalamud-wrapped service for this, the same way CameraManager above is read
+    /// raw rather than through a Dalamud service.
+    ///
+    /// VERIFY-BEFORE-RELYING-ON: I wrote CurrentUnits/BarUnits against my best
+    /// understanding of LimitBreakController's layout, but couldn't confirm the
+    /// exact field names against the live FFXIVClientStructs source this session.
+    /// If this doesn't compile, or compiles but always reads 0 in a party with a
+    /// visibly partial gauge, right-click LimitBreakController below → Go to
+    /// Definition, check the real field names against what's used here, and
+    /// adjust. The shape of the calc (filled bars = current progress units ÷
+    /// units-per-bar, clamped to 3) should still be right even if names changed.
+    /// </summary>
+    private static unsafe int GetLimitBreakReadyLevel()
+    {
+        var uiState = UIState.Instance();
+        if (uiState == null) return 0;
+
+        var lb = uiState->LimitBreakController;
+        if (lb.BarUnits <= 0) return 0;
+
+        int barsFilled = (int)(lb.CurrentUnits / lb.BarUnits);
+        return Math.Clamp(barsFilled, 0, 3);
     }
 
     // ── Unified marker + FATE render (single sorted pass) ────────────────────

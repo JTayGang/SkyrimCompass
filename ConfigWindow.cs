@@ -49,7 +49,7 @@ public sealed class ConfigWindow : Window
             changed |= DrawColorsTab(cfg);    // instance method — needs _selectedThemeIndex
             changed |= DrawDetectionTab(cfg);
             changed |= DrawPlayersTab(cfg);   // instance method — needs the _newOverride field
-            changed |= DrawEnemiesTab(cfg);
+            changed |= DrawCombatTab(cfg);
             changed |= DrawNpcsTab(cfg);
             changed |= DrawGatheringTab(cfg);
             changed |= DrawTreasureTab(cfg);
@@ -596,11 +596,11 @@ public sealed class ConfigWindow : Window
         return changed;
     }
 
-    // ── Enemies tab ──────────────────────────────────────────────────────────
+    // ── Combat tab ───────────────────────────────────────────────────────────
 
-    private static bool DrawEnemiesTab(Configuration cfg)
+    private static bool DrawCombatTab(Configuration cfg)
     {
-        if (!ImGui.BeginTabItem("Enemies")) return false;
+        if (!ImGui.BeginTabItem("Combat")) return false;
         bool    b = cfg.ShowEnemies;
         Vector4 c = cfg.EnemyColor;
         bool changed = DrawEnableAndColor("enemies", "Enemies", ref b, ref c);
@@ -622,6 +622,47 @@ public sealed class ConfigWindow : Window
         { cfg.EnemyMinSize = enMin; cfg.EnemyMaxSize = enMax; changed = true; }
         if (ImGui.IsItemHovered())
             ImGui.SetTooltip("Controls the size of every enemy marker.");
+
+        ImGui.EndDisabled();
+        ImGui.Unindent();
+
+        ImGui.Spacing();
+        ImGui.Separator();
+        ImGui.Spacing();
+
+        bool    lbB = cfg.ShowLimitBreakGlow;
+        Vector4 lbC = cfg.LimitBreakGlowColor;
+        if (DrawEnableAndColor("lbglow", "Limit break glow", ref lbB, ref lbC))
+        { cfg.ShowLimitBreakGlow = lbB; cfg.LimitBreakGlowColor = lbC; changed = true; }
+        if (ImGui.IsItemHovered())
+            ImGui.SetTooltip(
+                "Skyrim-style: glows in from each end of the border as limit\n" +
+                "break charges. 1 bar lights the outer 1/6 from each end, 2 bars\n" +
+                "the outer 1/3, and a full 3-bar break lights the whole border.");
+
+        // TEMPORARY DEBUG AID — forces CompassHud's glow tier so each level can be
+        // eyeballed without actually charging LB in a duty. Doesn't touch Configuration
+        // (nothing here is saved/persisted), and doesn't route through `changed`, since
+        // there's nothing to write to disk. Safe to delete this whole block — and the
+        // DebugForceLimitBreakLevel field it pokes on CompassHud — once you're happy
+        // with the visuals.
+        ImGui.Indent();
+        ImGui.BeginDisabled(!cfg.ShowLimitBreakGlow);
+        ImGui.TextDisabled("Debug — preview each tier without a real limit break");
+
+        bool dbg1 = CompassHud.DebugForceLimitBreakLevel == 1;
+        if (ImGui.Checkbox("Force LB1##lbdbg1", ref dbg1))
+            CompassHud.DebugForceLimitBreakLevel = dbg1 ? 1 : 0;
+        ImGui.SameLine();
+        bool dbg2 = CompassHud.DebugForceLimitBreakLevel == 2;
+        if (ImGui.Checkbox("Force LB2##lbdbg2", ref dbg2))
+            CompassHud.DebugForceLimitBreakLevel = dbg2 ? 2 : 0;
+        ImGui.SameLine();
+        bool dbg3 = CompassHud.DebugForceLimitBreakLevel == 3;
+        if (ImGui.Checkbox("Force LB3##lbdbg3", ref dbg3))
+            CompassHud.DebugForceLimitBreakLevel = dbg3 ? 3 : 0;
+        if (ImGui.IsItemHovered())
+            ImGui.SetTooltip("Checking one unchecks the others — only one tier can be forced at a time.");
 
         ImGui.EndDisabled();
         ImGui.Unindent();

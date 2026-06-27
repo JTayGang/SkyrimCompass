@@ -94,6 +94,15 @@ public class Configuration : IPluginConfiguration
     /// <summary>Marker size (px). Defaults match the old hardcoded dot formula (3 + 7*t).</summary>
     public float EnemyMinSize { get; set; } = 6f;
     public float EnemyMaxSize { get; set; } = 20f;
+
+    // ── Limit break glow ─────────────────────────────────────────────────────
+    /// <summary>
+    /// Glows the compass centre notch when limit break is ready, lighting the
+    /// left end-cap diamond too at 2 bars and both end-caps at a full 3-bar break.
+    /// </summary>
+    public bool    ShowLimitBreakGlow  { get; set; } = false;
+    public Vector4 LimitBreakGlowColor { get; set; } = new(1.00f, 0.65f, 0.10f, 0.95f);
+
     public bool ShowNpcs          { get; set; } = true;
     /// <summary>Hides non-targetable EventNpc "ghost" placeholders (e.g. empty chocobo stable slot).</summary>
     public bool NpcsOnlyIfTargetable { get; set; } = true;
