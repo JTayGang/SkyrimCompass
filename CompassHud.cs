@@ -7,6 +7,7 @@ using Dalamud.Game.ClientState.Objects.Enums;
 using Dalamud.Game.ClientState.Objects.SubKinds;
 using Dalamud.Game.ClientState.Objects.Types;
 using Dalamud.Game.Gui.NamePlate;
+using Dalamud.Interface.ManagedFontAtlas;
 using Dalamud.Interface.Textures;
 using Dalamud.Plugin.Services;
 using Dalamud.Bindings.ImGui;
@@ -32,6 +33,7 @@ public sealed class CompassHud : IDisposable
     private readonly ICondition condition;
     private readonly Configuration config;
     private readonly IPluginLog log;
+    private readonly IFontHandle jupiterFont;
 
     // GameObjectId -> current nameplate marker icon ID (quest/etc.), refreshed every
     // nameplate update. 0/absent = no active marker.
@@ -100,7 +102,8 @@ public sealed class CompassHud : IDisposable
         ICondition condition,
         IDataManager dataManager,
         Configuration config,
-        IPluginLog log)
+        IPluginLog log,
+        IFontHandle jupiterFont)
     {
         this.clientState     = clientState;
         this.objectTable     = objectTable;
@@ -111,6 +114,7 @@ public sealed class CompassHud : IDisposable
         this.condition       = condition;
         this.config          = config;
         this.log             = log;
+        this.jupiterFont     = jupiterFont;
 
         gatheringPointSheet     = dataManager.GetExcelSheet<GatheringPoint>();
         gatheringPointBaseSheet = dataManager.GetExcelSheet<GatheringPointBase>();
@@ -290,6 +294,29 @@ public sealed class CompassHud : IDisposable
         // ── 3. Clip to bar ────────────────────────────────────────────────────
         dl.PushClipRect(V(bx + 1f, by), V(bx + bw - 1f, by + bh), true);
 
+        // Push Jupiter — FFXIV's ornate serif heading font — for the Skyrim feel.
+        // Push() returns an IDisposable that auto-pops; null when not yet built
+        // (first frame or two), which means no push/pop and the default font is used.
+        // Pushed before the tick loop (not just the label loop) because the tick-height
+        // clamp below needs Jupiter's real metrics, not the default font's.
+        using var jupiterScope = jupiterFont.Available ? jupiterFont.Push() : null;
+
+        float fontSize = ImGui.GetFontSize() * config.FontScale;
+        var   font     = ImGui.GetFont();   // Jupiter after push, default otherwise
+
+        // Where the direction labels sit + how tall one line of them renders.
+        // "N"'s height stands in for all labels — CalcTextSize's Y is the font's
+        // line height, not glyph-dependent, so it's the same for "N" and "NE" alike.
+        float labelTop    = by + bh * 0.12f;
+        float labelHeight = ImGui.CalcTextSize("N").Y * config.FontScale;
+        float labelBottom = labelTop + labelHeight;
+
+        // Ticks must stop at least this far above the label row, or the 90° ticks
+        // (tallest of the four lengths) draw straight through the cardinal letters
+        // on anything shorter than the tallest compass heights.
+        const float tickLabelGap = 0f;
+        float maxTickHeight = MathF.Max(2f, (by + bh - 1f) - (labelBottom + tickLabelGap));
+
         // ── 4. Tick marks (every 5°, using lens projection) ──────────────────
         for (int d = 0; d < 360; d += 5)
         {
@@ -305,6 +332,7 @@ public sealed class CompassHud : IDisposable
                      : is45 ? bh * 0.36f
                      : is10 ? bh * 0.22f
                              : bh * 0.13f;
+            th = MathF.Min(th, maxTickHeight);   // clipped so it never reaches the letters
 
             // Fade ticks that are in the lens-compressed zone
             float lensA    = LensEdgeAlpha(delta, halfVis, extHalf);
@@ -318,9 +346,6 @@ public sealed class CompassHud : IDisposable
         }
 
         // ── 5. Direction labels (upper band, lens-projected) ──────────────────
-        float fontSize = ImGui.GetFontSize() * config.FontScale;
-        var   font     = ImGui.GetFont();
-
         foreach (var (deg, label, isMajor) in Directions)
         {
             float delta = Delta(heading, deg);
@@ -329,16 +354,17 @@ public sealed class CompassHud : IDisposable
             float sx  = cx + Project(delta, halfVis, barHalfW, lensStr);
             var   tsz = ImGui.CalcTextSize(label) * config.FontScale;
             float tx  = sx - tsz.X * 0.5f;
-            float ty  = by + bh * 0.12f;
+            float ty  = labelTop;
 
             // Labels start fading slightly earlier than ticks (compressed text is hard to read)
-            float lensA    = LensEdgeAlpha(delta, halfVis * 0.88f, extHalf);
-            uint  labelCol = WithAlpha(isMajor ? cardCol : ixCol, lensA);
+            float lensA     = LensEdgeAlpha(delta, halfVis * 0.88f, extHalf);
+            uint  labelCol  = WithAlpha(isMajor ? cardCol : ixCol, lensA);
             uint  shadowCol = WithAlpha(0xBB000000u, lensA);
 
             dl.AddText(font, fontSize, V(tx + 1f, ty + 1f), shadowCol, label);
             dl.AddText(font, fontSize, V(tx, ty), labelCol, label);
         }
+        // jupiterScope disposed here → Jupiter automatically popped
 
         // ── 6. Entity markers + FATEs (single sorted pass) ───────────────────
         // Both types share one candidate list and sort so closer items always paint
@@ -582,10 +608,12 @@ public sealed class CompassHud : IDisposable
 
                         if (nameOverride is not null)
                         {
-                            // Border, fill, and icon share one base size. SizeMultiplier
-                            // doesn't scale the draw quad — TryDrawIcon's uvZoom shifts
-                            // the UV window instead, so the icon can never grow past the
-                            // border ring.
+                            // Border/fill always sit at this base size, matching the other
+                            // player markers. The icon itself shares it as its baseline too,
+                            // but TryDrawIcon may scale the icon past it: ClipToCircle keeps
+                            // the icon bounded here (zooms via UV crop instead), while a
+                            // square icon has no ring to respect and genuinely grows/shrinks
+                            // with SizeMultiplier.
                             float overrideSize = playerSize * IconSizeMultiplier;
                             float overrideHalf = overrideSize * 0.5f;
 
@@ -697,8 +725,16 @@ public sealed class CompassHud : IDisposable
     /// <summary>
     /// Draws a game icon by ID, centred at the given screen position. Returns false
     /// (fall back to a dot) if the texture isn't resolved yet. <paramref name="uvZoom"/>
-    /// crops into the texture (>1) or zooms out past its edge (&lt;1) while the drawn
-    /// quad stays fixed at <paramref name="size"/> — 1.0 (default) shows the full texture.
+    /// behaves differently depending on <paramref name="clipToCircle"/>:
+    /// <list type="bullet">
+    /// <item>Circle-clipped: the drawn quad stays fixed at <paramref name="size"/> (so it
+    /// never grows past a same-sized border ring) and zooming instead crops into the
+    /// texture (&gt;1) or zooms out past its edge (&lt;1).</item>
+    /// <item>Square (uncropped): there's no fixed boundary to respect, so zooming
+    /// genuinely scales the drawn quad itself — the icon grows on screen and can
+    /// spill past a same-sized border ring, showing the full texture throughout.</item>
+    /// </list>
+    /// 1.0 (default) shows the icon at <paramref name="size"/> either way.
     /// </summary>
     private bool TryDrawIcon(ImDrawListPtr dl, int iconId, float sx, float cy, float size, float alpha, bool clipToCircle = false, float uvZoom = 1.0f)
     {
@@ -707,11 +743,29 @@ public sealed class CompassHud : IDisposable
 
         var tex = sharedTex.GetWrapOrEmpty();
 
-        float   half   = size * 0.5f;
-        uint    tint   = WithAlpha(0xFFFFFFFFu, alpha);
-        float   uvHalf = 0.5f / Math.Max(0.01f, uvZoom);
-        Vector2 uvMin  = new(0.5f - uvHalf, 0.5f - uvHalf);
-        Vector2 uvMax  = new(0.5f + uvHalf, 0.5f + uvHalf);
+        uint tint = WithAlpha(0xFFFFFFFFu, alpha);
+
+        float   half;
+        Vector2 uvMin, uvMax;
+
+        if (clipToCircle)
+        {
+            // Fixed footprint matching the border ring — zoom crops the texture
+            // (UV window shrinks) instead of growing the quad, so the visible art
+            // never spills past the ring it's framed by.
+            half          = size * 0.5f;
+            float uvHalf  = 0.5f / Math.Max(0.01f, uvZoom);
+            uvMin = new(0.5f - uvHalf, 0.5f - uvHalf);
+            uvMax = new(0.5f + uvHalf, 0.5f + uvHalf);
+        }
+        else
+        {
+            // No clip shape to respect, so zoom scales the quad itself — full
+            // texture throughout, the icon just gets bigger/smaller on screen.
+            half  = size * 0.5f * Math.Max(0.01f, uvZoom);
+            uvMin = new(0f, 0f);
+            uvMax = new(1f, 1f);
+        }
 
         // RenderBar clips to the bar rect, which can cut off icons whose bounding box
         // (inflated by the size multipliers) is wider than the bar near the edges.

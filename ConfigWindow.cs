@@ -14,6 +14,11 @@ public sealed class ConfigWindow : Window
     // and the existing-entries list below.
     private PlayerIconOverride _newOverride = new();
 
+    // Color-theme combo selection — not persisted (the applied colors themselves
+    // are; this just remembers which dropdown entry is showing). Defaults to
+    // "Original", which is always index 0.
+    private int _selectedThemeIndex = 0;
+
     public ConfigWindow(Plugin plugin)
         : base("Skyrim Compass Settings##skyrimcompasscfg",
                ImGuiWindowFlags.AlwaysAutoResize | ImGuiWindowFlags.NoScrollbar)
@@ -41,7 +46,7 @@ public sealed class ConfigWindow : Window
         if (ImGui.BeginTabBar("##tabs"))
         {
             changed |= DrawLayoutTab(cfg);
-            changed |= DrawColorsTab(cfg);
+            changed |= DrawColorsTab(cfg);    // instance method — needs _selectedThemeIndex
             changed |= DrawDetectionTab(cfg);
             changed |= DrawPlayersTab(cfg);   // instance method — needs the _newOverride field
             changed |= DrawEnemiesTab(cfg);
@@ -163,7 +168,133 @@ public sealed class ConfigWindow : Window
 
     // ── Colors tab ───────────────────────────────────────────────────────────
 
-    private static bool DrawColorsTab(Configuration cfg)
+    /// <summary>One full compass palette — bar chrome plus every marker category color.</summary>
+    private sealed class ColorTheme
+    {
+        public string  Name          = "";
+        public Vector4 Background;
+        public Vector4 Border;
+        public Vector4 Cardinal;
+        public Vector4 Intercardinal;
+        public Vector4 Tick;
+        public Vector4 Player;
+        public Vector4 Enemy;
+        public Vector4 Npc;
+        public Vector4 Gathering;
+        public Vector4 Treasure;
+        public Vector4 Aetheryte;
+        public Vector4 Fate;
+    }
+
+    // "Original" exactly mirrors Configuration's own defaults, so picking it always
+    // gets you back to the plugin's out-of-the-box look. The rest are just fun
+    // palette swaps — add more here any time, the dropdown picks them up automatically.
+    private static readonly ColorTheme[] ColorThemes =
+    {
+        new ColorTheme
+        {
+            Name          = "Original",
+            Background    = new(0.05f, 0.04f, 0.03f, 0.82f),
+            Border        = new(0.48f, 0.42f, 0.27f, 0.92f),
+            Cardinal      = new(1.00f, 0.97f, 0.88f, 1.00f),
+            Intercardinal = new(0.72f, 0.70f, 0.65f, 0.88f),
+            Tick          = new(0.58f, 0.56f, 0.52f, 0.72f),
+            Player        = new(0.40f, 0.65f, 1.00f, 0.92f),
+            Enemy         = new(1.00f, 0.25f, 0.25f, 0.92f),
+            Npc           = new(0.95f, 0.88f, 0.35f, 0.92f),
+            Gathering     = new(0.30f, 0.92f, 0.40f, 0.92f),
+            Treasure      = new(1.00f, 0.80f, 0.15f, 0.95f),
+            Aetheryte     = new(0.55f, 0.85f, 0.95f, 0.92f),
+            Fate          = new(0.82f, 0.35f, 0.95f, 0.95f),
+        },
+        new ColorTheme
+        {
+            Name          = "Frostfall",
+            Background    = new(0.03f, 0.06f, 0.10f, 0.84f),
+            Border        = new(0.55f, 0.75f, 0.88f, 0.92f),
+            Cardinal      = new(0.92f, 0.97f, 1.00f, 1.00f),
+            Intercardinal = new(0.68f, 0.82f, 0.90f, 0.88f),
+            Tick          = new(0.55f, 0.68f, 0.78f, 0.72f),
+            Player        = new(0.50f, 0.85f, 1.00f, 0.92f),
+            Enemy         = new(1.00f, 0.35f, 0.40f, 0.92f),
+            Npc           = new(0.85f, 0.95f, 1.00f, 0.92f),
+            Gathering     = new(0.40f, 0.95f, 0.85f, 0.92f),
+            Treasure      = new(0.95f, 0.92f, 0.65f, 0.95f),
+            Aetheryte     = new(0.60f, 0.90f, 1.00f, 0.92f),
+            Fate          = new(0.75f, 0.55f, 1.00f, 0.95f),
+        },
+        new ColorTheme
+        {
+            Name          = "Inferno",
+            Background    = new(0.08f, 0.03f, 0.02f, 0.85f),
+            Border        = new(0.75f, 0.32f, 0.10f, 0.92f),
+            Cardinal      = new(1.00f, 0.88f, 0.60f, 1.00f),
+            Intercardinal = new(0.88f, 0.58f, 0.32f, 0.88f),
+            Tick          = new(0.65f, 0.38f, 0.22f, 0.72f),
+            Player        = new(0.45f, 0.75f, 1.00f, 0.92f),
+            Enemy         = new(1.00f, 0.18f, 0.10f, 0.95f),
+            Npc           = new(1.00f, 0.78f, 0.30f, 0.92f),
+            Gathering     = new(0.55f, 0.90f, 0.35f, 0.92f),
+            Treasure      = new(1.00f, 0.70f, 0.10f, 0.95f),
+            Aetheryte     = new(0.95f, 0.55f, 0.85f, 0.92f),
+            Fate          = new(1.00f, 0.40f, 0.85f, 0.95f),
+        },
+        new ColorTheme
+        {
+            Name          = "Verdant",
+            Background    = new(0.03f, 0.06f, 0.03f, 0.84f),
+            Border        = new(0.38f, 0.58f, 0.32f, 0.92f),
+            Cardinal      = new(0.92f, 1.00f, 0.85f, 1.00f),
+            Intercardinal = new(0.68f, 0.82f, 0.60f, 0.88f),
+            Tick          = new(0.50f, 0.62f, 0.45f, 0.72f),
+            Player        = new(0.45f, 0.80f, 1.00f, 0.92f),
+            Enemy         = new(1.00f, 0.30f, 0.25f, 0.92f),
+            Npc           = new(0.92f, 0.85f, 0.40f, 0.92f),
+            Gathering     = new(0.45f, 1.00f, 0.50f, 0.95f),
+            Treasure      = new(1.00f, 0.85f, 0.25f, 0.95f),
+            Aetheryte     = new(0.55f, 0.92f, 0.80f, 0.92f),
+            Fate          = new(0.78f, 0.95f, 0.35f, 0.95f),
+        },
+        new ColorTheme
+        {
+            Name          = "Void",
+            Background    = new(0.04f, 0.02f, 0.08f, 0.85f),
+            Border        = new(0.58f, 0.38f, 0.78f, 0.92f),
+            Cardinal      = new(0.92f, 0.85f, 1.00f, 1.00f),
+            Intercardinal = new(0.72f, 0.62f, 0.85f, 0.88f),
+            Tick          = new(0.55f, 0.48f, 0.65f, 0.72f),
+            Player        = new(0.55f, 0.72f, 1.00f, 0.92f),
+            Enemy         = new(1.00f, 0.30f, 0.55f, 0.92f),
+            Npc           = new(0.88f, 0.78f, 1.00f, 0.92f),
+            Gathering     = new(0.55f, 0.95f, 0.65f, 0.92f),
+            Treasure      = new(1.00f, 0.75f, 0.95f, 0.95f),
+            Aetheryte     = new(0.68f, 0.55f, 1.00f, 0.92f),
+            Fate          = new(0.85f, 0.40f, 1.00f, 0.95f),
+        },
+    };
+
+    // Derived once from ColorThemes — add a theme above and the dropdown grows
+    // to match without touching this.
+    private static readonly string[] ColorThemeNames = Array.ConvertAll(ColorThemes, t => t.Name);
+
+    private static void ApplyColorTheme(Configuration cfg, ColorTheme theme)
+    {
+        cfg.BackgroundColor    = theme.Background;
+        cfg.BorderColor        = theme.Border;
+        cfg.CardinalColor      = theme.Cardinal;
+        cfg.IntercardinalColor = theme.Intercardinal;
+        cfg.TickColor          = theme.Tick;
+        cfg.PlayerColor        = theme.Player;
+        cfg.EnemyColor         = theme.Enemy;
+        cfg.NpcColor           = theme.Npc;
+        cfg.GatheringColor     = theme.Gathering;
+        cfg.TreasureColor      = theme.Treasure;
+        cfg.AetheryteColor     = theme.Aetheryte;
+        cfg.FateColor          = theme.Fate;
+    }
+
+    // NOT static — needs _selectedThemeIndex.
+    private bool DrawColorsTab(Configuration cfg)
     {
         if (!ImGui.BeginTabItem("Colors")) return false;
         bool    changed = false;
@@ -188,6 +319,26 @@ public sealed class ConfigWindow : Window
         c = cfg.TickColor;
         if (ImGui.ColorEdit4("Tick marks##tkc", ref c))
         { cfg.TickColor = c; changed = true; }
+
+        ImGui.Spacing();
+        ImGui.Separator();
+        ImGui.Spacing();
+
+        ImGui.TextDisabled("Color theme presets");
+        ImGui.SetNextItemWidth(180);
+        if (ImGui.Combo("##colortheme", ref _selectedThemeIndex, ColorThemeNames, ColorThemeNames.Length))
+        {
+            ApplyColorTheme(cfg, ColorThemes[_selectedThemeIndex]);
+            changed = true;
+        }
+        if (ImGui.IsItemHovered())
+            ImGui.SetTooltip(
+                "Overwrites every compass color in one click — bar background/border/\n" +
+                "labels/ticks above, AND every marker category color over in its own\n" +
+                "tab (players, enemies, NPCs, gathering, treasure, aetherytes, FATEs).\n" +
+                "Pick \"Original\" to restore the plugin's defaults.\n" +
+                "Anything can still be hand-tweaked afterward — picking a theme is just\n" +
+                "a starting point, not a locked-in mode.");
 
         ImGui.EndTabItem();
         return changed;

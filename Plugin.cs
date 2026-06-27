@@ -1,5 +1,7 @@
 using System;
 using Dalamud.Game.Command;
+using Dalamud.Interface.GameFonts;
+using Dalamud.Interface.ManagedFontAtlas;
 using Dalamud.Interface.Windowing;
 using Dalamud.Plugin;
 using Dalamud.Plugin.Services;
@@ -18,6 +20,7 @@ public sealed class Plugin : IDalamudPlugin
     private readonly WindowSystem windowSystem = new("SkyrimCompass");
     private readonly CompassHud compassHud;
     private readonly ConfigWindow configWindow;
+    private readonly IFontHandle jupiterFontHandle;
 
     public Plugin(
         IDalamudPluginInterface pluginInterface,
@@ -38,9 +41,13 @@ public sealed class Plugin : IDalamudPlugin
 
         Config = pluginInterface.GetPluginConfig() as Configuration ?? new Configuration();
 
+        // Jupiter is FFXIV's ornate serif font — loaded once, shared with CompassHud.
+        jupiterFontHandle = pluginInterface.UiBuilder.FontAtlas.NewGameFontHandle(
+            new GameFontStyle(GameFontFamily.Jupiter, 18));
+
         compassHud = new CompassHud(
             clientState, objectTable, targetManager, namePlateGui, textureProvider, fateTable,
-            condition, dataManager, Config, pluginLog);
+            condition, dataManager, Config, pluginLog, jupiterFontHandle);
         configWindow = new ConfigWindow(this);
 
         windowSystem.AddWindow(configWindow);
@@ -61,6 +68,7 @@ public sealed class Plugin : IDalamudPlugin
         commandManager.RemoveHandler(CommandName);
         PluginInterface.UiBuilder.Draw -= OnDraw;
         PluginInterface.UiBuilder.OpenConfigUi -= OnOpenConfig;
+        jupiterFontHandle.Dispose();
         compassHud.Dispose();
     }
 
