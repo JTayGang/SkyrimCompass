@@ -9,18 +9,10 @@ public sealed class ConfigWindow : Window
 {
     private readonly Plugin plugin;
 
-    // ── Transient state for the "add new player override" form ───────────────
-    // These live on the window instance (not in Configuration) because they're
-    // only needed while the user is typing in the add-new row and never need to
-    // be persisted to disk — they reset to empty each time the entry is committed.
-    private string  _newOverrideName        = "";
-    private int     _newOverrideIconId      = 0;
-    private bool    _newOverrideBorder      = false;
-    private Vector4 _newOverrideBorderColor = new(1.00f, 1.00f, 1.00f, 0.90f);
-    private bool    _newOverrideFill        = false;
-    private Vector4 _newOverrideFillColor   = new(1.00f, 1.00f, 1.00f, 0.40f);
-    private bool    _newOverrideClipToCircle  = false;
-    private float   _newOverrideSizeMultiplier = 1.0f;
+    // "Add new player override" form state — not persisted, resets on commit.
+    // A real PlayerIconOverride so the same field-drawing code works for both this
+    // and the existing-entries list below.
+    private PlayerIconOverride _newOverride = new();
 
     public ConfigWindow(Plugin plugin)
         : base("Skyrim Compass Settings##skyrimcompasscfg",
@@ -51,7 +43,7 @@ public sealed class ConfigWindow : Window
             changed |= DrawLayoutTab(cfg);
             changed |= DrawColorsTab(cfg);
             changed |= DrawDetectionTab(cfg);
-            changed |= DrawPlayersTab(cfg);   // instance method — needs _newOverride* fields
+            changed |= DrawPlayersTab(cfg);   // instance method — needs the _newOverride field
             changed |= DrawEnemiesTab(cfg);
             changed |= DrawNpcsTab(cfg);
             changed |= DrawGatheringTab(cfg);
@@ -120,6 +112,15 @@ public sealed class ConfigWindow : Window
         bool sh = cfg.ShowHeadingText;
         if (ImGui.Checkbox("Show numeric heading below bar", ref sh))
         { cfg.ShowHeadingText = sh; changed = true; }
+
+        bool hdc = cfg.HideDuringCutscenes;
+        if (ImGui.Checkbox("Hide during cutscenes", ref hdc))
+        { cfg.HideDuringCutscenes = hdc; changed = true; }
+        if (ImGui.IsItemHovered())
+            ImGui.SetTooltip(
+                "Skips drawing the compass entirely while the camera is locked to a\n" +
+                "cutscene (story cutscenes, skippable cinematics, and group pose) —\n" +
+                "there's nothing to navigate to while the camera isn't yours anyway.");
 
         ImGui.Spacing();
         ImGui.Separator();
@@ -193,12 +194,8 @@ public sealed class ConfigWindow : Window
     }
 
     // ── Detection tab ────────────────────────────────────────────────────────
-    // Houses the settings that are genuinely shared across multiple marker
-    // categories rather than belonging to any one of them: MaxMarkerDistance
-    // covers everything in the main object-table loop (Players/Enemies/NPCs/
-    // Gathering/Treasure/Aetherytes — FATEs have their own separate range on
-    // their own tab), and the fade curve is shared by literally every category
-    // including FATEs (one ComputeFadeAlpha method, used everywhere).
+    // Settings shared across categories: MaxMarkerDistance (object-table loop;
+    // FATEs have their own range) and the fade curve (used everywhere, incl. FATEs).
 
     private static bool DrawDetectionTab(Configuration cfg)
     {
@@ -206,8 +203,8 @@ public sealed class ConfigWindow : Window
         bool changed = false;
 
         ImGui.TextDisabled(
-            "Settings shared across every marker category below\n" +
-            "(FATEs have their own separate detection range on their own tab).");
+            "Settings shared across every marker category, including FATEs.\n" +
+            "(FATEs use a multiplier of this distance — see the FATEs tab.)");
         ImGui.Spacing();
 
         ImGui.TextDisabled("Maximum detection distance (straight-line, includes height):");
@@ -251,29 +248,94 @@ public sealed class ConfigWindow : Window
     }
 
     // ── Players tab ──────────────────────────────────────────────────────────
-    // This is the one tab that's NOT static — it needs access to the _newOverride*
-    // instance fields that hold the transient "add new entry" form state.
+    // NOT static — needs the _newOverride instance field above.
+
+    /// <summary>One editable override row: name, icon ID, border/fill/clip/multiplier. Shared by existing entries and the pending "add new" form.</summary>
+    private static bool DrawOverrideRow(PlayerIconOverride ov, string idSuffix, float nameWidth)
+    {
+        bool changed = false;
+
+        string name = ov.PlayerName;
+        ImGui.SetNextItemWidth(nameWidth);
+        if (ImGui.InputText($"##{idSuffix}name", ref name, 64)) { ov.PlayerName = name; changed = true; }
+        if (ImGui.IsItemHovered())
+            ImGui.SetTooltip("Player display name (exact, case-insensitive)");
+        ImGui.SameLine();
+
+        // Icon base ID — no step arrows, 5-digit IDs are easier to type directly
+        int iconId = ov.IconBaseId;
+        ImGui.SetNextItemWidth(68f);
+        if (ImGui.InputInt($"##{idSuffix}id", ref iconId, 0, 0)) { ov.IconBaseId = Math.Max(0, iconId); changed = true; }
+        if (ImGui.IsItemHovered())
+            ImGui.SetTooltip("Game icon base ID\n(e.g. 62007 Paladin, 60453 Aetheryte, 61802 FC emblem)\nBrowse all icons with: /xldata icons");
+        ImGui.SameLine();
+
+        // Border checkbox + color swatch
+        bool border = ov.ShowBorder;
+        if (ImGui.Checkbox($"B##{idSuffix}b", ref border)) { ov.ShowBorder = border; changed = true; }
+        if (ImGui.IsItemHovered())
+            ImGui.SetTooltip("Draw a solid outer ring around the icon");
+        ImGui.SameLine();
+        ImGui.BeginDisabled(!ov.ShowBorder);
+        Vector4 bc = ov.BorderColor;
+        if (ImGui.ColorEdit4($"##{idSuffix}bc", ref bc, ColorPickerFlags)) { ov.BorderColor = bc; changed = true; }
+        if (ImGui.IsItemHovered())
+            ImGui.SetTooltip("Border ring color");
+        ImGui.EndDisabled();
+        ImGui.SameLine();
+
+        // Fill checkbox + color swatch
+        bool fill = ov.ShowFill;
+        if (ImGui.Checkbox($"F##{idSuffix}f", ref fill)) { ov.ShowFill = fill; changed = true; }
+        if (ImGui.IsItemHovered())
+            ImGui.SetTooltip("Draw an inward-fading fill behind the icon\n(same bloom effect as party role icon backgrounds)");
+        ImGui.SameLine();
+        ImGui.BeginDisabled(!ov.ShowFill);
+        Vector4 fc = ov.FillColor;
+        if (ImGui.ColorEdit4($"##{idSuffix}fc", ref fc, ColorPickerFlags)) { ov.FillColor = fc; changed = true; }
+        if (ImGui.IsItemHovered())
+            ImGui.SetTooltip("Fill color");
+        ImGui.EndDisabled();
+        ImGui.SameLine();
+
+        // Circle clip — rounds the icon to match the border ring shape
+        bool clip = ov.ClipToCircle;
+        if (ImGui.Checkbox($"○##{idSuffix}circ", ref clip)) { ov.ClipToCircle = clip; changed = true; }
+        if (ImGui.IsItemHovered())
+            ImGui.SetTooltip(
+                "Clip icon to a circle\n" +
+                "Rounds square icon textures to fit neatly inside the border ring.\n" +
+                "Uses ImGui's built-in rounded image rendering — no extra cost.");
+        ImGui.SameLine();
+
+        // Per-icon size multiplier — stacks on top of the global 1.5× compensation
+        float mul = ov.SizeMultiplier;
+        ImGui.SetNextItemWidth(58f);
+        if (ImGui.DragFloat($"##{idSuffix}mul", ref mul, 0.05f, 0.5f, 3.0f, "%.2fx")) { ov.SizeMultiplier = Math.Clamp(mul, 0.5f, 3.0f); changed = true; }
+        if (ImGui.IsItemHovered())
+            ImGui.SetTooltip(
+                "Per-icon size multiplier (stacks on top of the global 1.5× padding compensation).\n" +
+                "1.0 = same apparent size as a party role icon.\n" +
+                "Drag right for icons with heavy transparent padding,\n" +
+                "drag left for icons with minimal padding that look oversized.");
+
+        return changed;
+    }
 
     private bool DrawPlayersTab(Configuration cfg)
     {
         if (!ImGui.BeginTabItem("Players")) return false;
-        bool    changed = false;
         bool    b = cfg.ShowPlayers;
         Vector4 c = cfg.PlayerColor;
-
-        if (ImGui.Checkbox("##players_en", ref b))        { cfg.ShowPlayers = b;        changed = true; }
-        ImGui.SameLine();
-        if (ImGui.ColorEdit4("Players##players_c", ref c, ColorPickerFlags)) { cfg.PlayerColor = c;    changed = true; }
+        bool changed = DrawEnableAndColor("players", "Players", ref b, ref c);
+        cfg.ShowPlayers = b; cfg.PlayerColor = c;
 
         ImGui.Indent();
         ImGui.BeginDisabled(!cfg.ShowPlayers);
 
-        int prMin = (int)cfg.PartyRoleIconMinSize;
-        if (ImGui.SliderInt("Min size (far away)##prmin", ref prMin, 8, 50))
-        { cfg.PartyRoleIconMinSize = prMin; changed = true; }
-        int prMax = (int)cfg.PartyRoleIconMaxSize;
-        if (ImGui.SliderInt("Max size (close up)##prmax", ref prMax, 8, 60))
-        { cfg.PartyRoleIconMaxSize = prMax; changed = true; }
+        float prMin = cfg.PartyRoleIconMinSize, prMax = cfg.PartyRoleIconMaxSize;
+        if (DrawSizeSliders(ref prMin, ref prMax, 50, 60, "pr"))
+        { cfg.PartyRoleIconMinSize = prMin; cfg.PartyRoleIconMaxSize = prMax; changed = true; }
         if (ImGui.IsItemHovered())
             ImGui.SetTooltip(
                 "Controls the size of EVERY player marker — the plain hollow ring,\n" +
@@ -322,9 +384,7 @@ public sealed class ConfigWindow : Window
                 "Both border and fill remain visible even if the icon hasn't loaded yet.");
 
         if (cfg.PlayerIconOverrides.Count == 0)
-        {
             ImGui.TextDisabled("  (no overrides — add one below)");
-        }
 
         // ── Existing entries (one editable row each) ──────────────────────────
         int removeAt = -1;
@@ -333,85 +393,13 @@ public sealed class ConfigWindow : Window
             var ov = cfg.PlayerIconOverrides[i];
             ImGui.PushID(i);
 
-            // [X] remove button
             if (ImGui.Button("X##rmov"))
                 removeAt = i;
             if (ImGui.IsItemHovered())
                 ImGui.SetTooltip("Remove this override");
             ImGui.SameLine();
 
-            // Editable player name
-            string ovName = ov.PlayerName;
-            ImGui.SetNextItemWidth(110f);
-            if (ImGui.InputText("##ovname", ref ovName, 64))
-            { ov.PlayerName = ovName; changed = true; }
-            if (ImGui.IsItemHovered())
-                ImGui.SetTooltip("Player display name (exact, case-insensitive)");
-            ImGui.SameLine();
-
-            // Icon base ID — no step arrows, 5-digit IDs are easier to type directly
-            int ovId = ov.IconBaseId;
-            ImGui.SetNextItemWidth(68f);
-            if (ImGui.InputInt("##ovid", ref ovId, 0, 0))
-            { ov.IconBaseId = Math.Max(0, ovId); changed = true; }
-            if (ImGui.IsItemHovered())
-                ImGui.SetTooltip("Game icon base ID\n(e.g. 62007 Paladin, 60453 Aetheryte, 61802 FC emblem)\nBrowse all icons with: /xldata icons");
-            ImGui.SameLine();
-
-            // Border checkbox + color swatch
-            bool ovBorder = ov.ShowBorder;
-            if (ImGui.Checkbox("B##ovb", ref ovBorder))
-            { ov.ShowBorder = ovBorder; changed = true; }
-            if (ImGui.IsItemHovered())
-                ImGui.SetTooltip("Draw a solid outer ring around the icon");
-            ImGui.SameLine();
-            ImGui.BeginDisabled(!ov.ShowBorder);
-            Vector4 ovBc = ov.BorderColor;
-            if (ImGui.ColorEdit4("##ovbc", ref ovBc, ColorPickerFlags))
-            { ov.BorderColor = ovBc; changed = true; }
-            if (ImGui.IsItemHovered())
-                ImGui.SetTooltip("Border ring color");
-            ImGui.EndDisabled();
-            ImGui.SameLine();
-
-            // Fill checkbox + color swatch
-            bool ovFill = ov.ShowFill;
-            if (ImGui.Checkbox("F##ovf", ref ovFill))
-            { ov.ShowFill = ovFill; changed = true; }
-            if (ImGui.IsItemHovered())
-                ImGui.SetTooltip("Draw an inward-fading fill behind the icon\n(same bloom effect as party role icon backgrounds)");
-            ImGui.SameLine();
-            ImGui.BeginDisabled(!ov.ShowFill);
-            Vector4 ovFc = ov.FillColor;
-            if (ImGui.ColorEdit4("##ovfc", ref ovFc, ColorPickerFlags))
-            { ov.FillColor = ovFc; changed = true; }
-            if (ImGui.IsItemHovered())
-                ImGui.SetTooltip("Fill color");
-            ImGui.EndDisabled();
-            ImGui.SameLine();
-
-            // Circle clip — rounds the icon to match the border ring shape
-            bool ovClip = ov.ClipToCircle;
-            if (ImGui.Checkbox("○##ovcirc", ref ovClip))
-            { ov.ClipToCircle = ovClip; changed = true; }
-            if (ImGui.IsItemHovered())
-                ImGui.SetTooltip(
-                    "Clip icon to a circle\n" +
-                    "Rounds square icon textures to fit neatly inside the border ring.\n" +
-                    "Uses ImGui's built-in rounded image rendering — no extra cost.");
-            ImGui.SameLine();
-
-            // Per-icon size multiplier — stacks on top of the global 1.5× compensation
-            float ovMul = ov.SizeMultiplier;
-            ImGui.SetNextItemWidth(58f);
-            if (ImGui.DragFloat("##ovmul", ref ovMul, 0.05f, 0.5f, 3.0f, "%.2fx"))
-            { ov.SizeMultiplier = Math.Clamp(ovMul, 0.5f, 3.0f); changed = true; }
-            if (ImGui.IsItemHovered())
-                ImGui.SetTooltip(
-                    "Per-icon size multiplier (stacks on top of the global 1.5× padding compensation).\n" +
-                    "1.0 = same apparent size as a party role icon.\n" +
-                    "Drag right for icons with heavy transparent padding,\n" +
-                    "drag left for icons with minimal padding that look oversized.");
+            changed |= DrawOverrideRow(ov, "ov", 110f);
 
             ImGui.PopID();
         }
@@ -424,71 +412,26 @@ public sealed class ConfigWindow : Window
         ImGui.TextDisabled("Add override:");
         ImGui.SameLine();
 
-        ImGui.SetNextItemWidth(120f);
-        ImGui.InputText("##newovname", ref _newOverrideName, 64);
-        if (ImGui.IsItemHovered())
-            ImGui.SetTooltip("Player display name to match");
+        DrawOverrideRow(_newOverride, "newov", 120f);   // mutates the pending entry only — not a config change yet
         ImGui.SameLine();
 
-        ImGui.SetNextItemWidth(68f);
-        ImGui.InputInt("##newovid", ref _newOverrideIconId, 0, 0);
-        _newOverrideIconId = Math.Max(0, _newOverrideIconId);
-        if (ImGui.IsItemHovered())
-            ImGui.SetTooltip("Game icon base ID\n(e.g. 62007 Paladin, 60453 Aetheryte, 61802 FC emblem)\nBrowse all icons with: /xldata icons");
-        ImGui.SameLine();
-
-        if (ImGui.Checkbox("B##newovb", ref _newOverrideBorder)) { }
-        if (ImGui.IsItemHovered())
-            ImGui.SetTooltip("Border ring");
-        ImGui.SameLine();
-        ImGui.BeginDisabled(!_newOverrideBorder);
-        ImGui.ColorEdit4("##newovbc", ref _newOverrideBorderColor, ColorPickerFlags);
-        if (ImGui.IsItemHovered())
-            ImGui.SetTooltip("Border color");
-        ImGui.EndDisabled();
-        ImGui.SameLine();
-
-        if (ImGui.Checkbox("F##newovf", ref _newOverrideFill)) { }
-        if (ImGui.IsItemHovered())
-            ImGui.SetTooltip("Inward fill");
-        ImGui.SameLine();
-        ImGui.BeginDisabled(!_newOverrideFill);
-        ImGui.ColorEdit4("##newovfc", ref _newOverrideFillColor, ColorPickerFlags);
-        if (ImGui.IsItemHovered())
-            ImGui.SetTooltip("Fill color");
-        ImGui.EndDisabled();
-        ImGui.SameLine();
-
-        if (ImGui.Checkbox("○##newovcirc", ref _newOverrideClipToCircle)) { }
-        if (ImGui.IsItemHovered())
-            ImGui.SetTooltip("Clip icon to circle");
-        ImGui.SameLine();
-
-        ImGui.SetNextItemWidth(58f);
-        ImGui.DragFloat("##newovmul", ref _newOverrideSizeMultiplier, 0.05f, 0.5f, 3.0f, "%.2fx");
-        _newOverrideSizeMultiplier = Math.Clamp(_newOverrideSizeMultiplier, 0.5f, 3.0f);
-        if (ImGui.IsItemHovered())
-            ImGui.SetTooltip("Per-icon size multiplier");
-        ImGui.SameLine();
-
-        bool canAdd = !string.IsNullOrWhiteSpace(_newOverrideName) && _newOverrideIconId > 0;
+        bool canAdd = !string.IsNullOrWhiteSpace(_newOverride.PlayerName) && _newOverride.IconBaseId > 0;
         ImGui.BeginDisabled(!canAdd);
         if (ImGui.Button("Add##addov"))
         {
-            cfg.PlayerIconOverrides.Add(new PlayerIconOverride
+            _newOverride.PlayerName = _newOverride.PlayerName.Trim();
+            cfg.PlayerIconOverrides.Add(_newOverride);
+            // Fresh entry for next time — carry over border/fill/clip/multiplier (handy
+            // when adding several overrides with the same look), reset name/icon ID only.
+            _newOverride = new PlayerIconOverride
             {
-                PlayerName    = _newOverrideName.Trim(),
-                IconBaseId    = _newOverrideIconId,
-                ShowBorder    = _newOverrideBorder,
-                BorderColor   = _newOverrideBorderColor,
-                ShowFill      = _newOverrideFill,
-                FillColor     = _newOverrideFillColor,
-                ClipToCircle  = _newOverrideClipToCircle,
-                SizeMultiplier = _newOverrideSizeMultiplier,
-            });
-            // Reset form for the next entry
-            _newOverrideName        = "";
-            _newOverrideIconId      = 0;
+                ShowBorder     = _newOverride.ShowBorder,
+                BorderColor    = _newOverride.BorderColor,
+                ShowFill       = _newOverride.ShowFill,
+                FillColor      = _newOverride.FillColor,
+                ClipToCircle   = _newOverride.ClipToCircle,
+                SizeMultiplier = _newOverride.SizeMultiplier,
+            };
             changed = true;
         }
         ImGui.EndDisabled();
@@ -507,13 +450,10 @@ public sealed class ConfigWindow : Window
     private static bool DrawEnemiesTab(Configuration cfg)
     {
         if (!ImGui.BeginTabItem("Enemies")) return false;
-        bool    changed = false;
         bool    b = cfg.ShowEnemies;
         Vector4 c = cfg.EnemyColor;
-
-        if (ImGui.Checkbox("##enemies_en", ref b))        { cfg.ShowEnemies = b;        changed = true; }
-        ImGui.SameLine();
-        if (ImGui.ColorEdit4("Enemies##enemies_c", ref c, ColorPickerFlags)) { cfg.EnemyColor = c;    changed = true; }
+        bool changed = DrawEnableAndColor("enemies", "Enemies", ref b, ref c);
+        cfg.ShowEnemies = b; cfg.EnemyColor = c;
 
         ImGui.Indent();
         ImGui.BeginDisabled(!cfg.ShowEnemies);
@@ -526,12 +466,9 @@ public sealed class ConfigWindow : Window
                 "currently targeting — instead of every hostile mob in range.\n" +
                 "Great for decluttering big pulls, hunt trains, and FATEs.");
 
-        int enMin = (int)cfg.EnemyMinSize;
-        if (ImGui.SliderInt("Min size (far away)##enmin", ref enMin, 8, 50))
-        { cfg.EnemyMinSize = enMin; changed = true; }
-        int enMax = (int)cfg.EnemyMaxSize;
-        if (ImGui.SliderInt("Max size (close up)##enmax", ref enMax, 8, 60))
-        { cfg.EnemyMaxSize = enMax; changed = true; }
+        float enMin = cfg.EnemyMinSize, enMax = cfg.EnemyMaxSize;
+        if (DrawSizeSliders(ref enMin, ref enMax, 50, 60, "en"))
+        { cfg.EnemyMinSize = enMin; cfg.EnemyMaxSize = enMax; changed = true; }
         if (ImGui.IsItemHovered())
             ImGui.SetTooltip("Controls the size of every enemy marker.");
 
@@ -547,13 +484,10 @@ public sealed class ConfigWindow : Window
     private static bool DrawNpcsTab(Configuration cfg)
     {
         if (!ImGui.BeginTabItem("NPCs")) return false;
-        bool    changed = false;
         bool    b = cfg.ShowNpcs;
         Vector4 c = cfg.NpcColor;
-
-        if (ImGui.Checkbox("##npcs_en", ref b))           { cfg.ShowNpcs = b;           changed = true; }
-        ImGui.SameLine();
-        if (ImGui.ColorEdit4("NPCs##npcs_c", ref c, ColorPickerFlags))       { cfg.NpcColor = c;      changed = true; }
+        bool changed = DrawEnableAndColor("npcs", "NPCs", ref b, ref c);
+        cfg.ShowNpcs = b; cfg.NpcColor = c;
 
         ImGui.Indent();
         ImGui.BeginDisabled(!cfg.ShowNpcs);
@@ -595,12 +529,9 @@ public sealed class ConfigWindow : Window
                 "Note: the exact icon variant used couldn't be visually confirmed\n" +
                 "without a live client — let me know if it doesn't look right.");
 
-        int qMin = (int)cfg.NpcQuestIconMinSize;
-        if (ImGui.SliderInt("Min size (far away)##qmin", ref qMin, 8, 50))
-        { cfg.NpcQuestIconMinSize = qMin; changed = true; }
-        int qMax = (int)cfg.NpcQuestIconMaxSize;
-        if (ImGui.SliderInt("Max size (close up)##qmax", ref qMax, 8, 60))
-        { cfg.NpcQuestIconMaxSize = qMax; changed = true; }
+        float qMin = cfg.NpcQuestIconMinSize, qMax = cfg.NpcQuestIconMaxSize;
+        if (DrawSizeSliders(ref qMin, ref qMax, 50, 60, "q"))
+        { cfg.NpcQuestIconMinSize = qMin; cfg.NpcQuestIconMaxSize = qMax; changed = true; }
         if (ImGui.IsItemHovered())
             ImGui.SetTooltip(
                 "Controls the size of EVERY NPC marker — the quest/Mender/Shop icons\n" +
@@ -618,13 +549,10 @@ public sealed class ConfigWindow : Window
     private static bool DrawGatheringTab(Configuration cfg)
     {
         if (!ImGui.BeginTabItem("Gathering")) return false;
-        bool    changed = false;
         bool    b = cfg.ShowGatheringNodes;
         Vector4 c = cfg.GatheringColor;
-
-        if (ImGui.Checkbox("##gath_en", ref b))           { cfg.ShowGatheringNodes = b; changed = true; }
-        ImGui.SameLine();
-        if (ImGui.ColorEdit4("Gathering Nodes##gath_c", ref c, ColorPickerFlags)) { cfg.GatheringColor = c; changed = true; }
+        bool changed = DrawEnableAndColor("gath", "Gathering Nodes", ref b, ref c);
+        cfg.ShowGatheringNodes = b; cfg.GatheringColor = c;
 
         ImGui.Indent();
         ImGui.BeginDisabled(!cfg.ShowGatheringNodes);
@@ -647,12 +575,9 @@ public sealed class ConfigWindow : Window
 
         ImGui.BeginDisabled(!gIcon);
         ImGui.Indent();
-        int gMin = (int)cfg.GatheringIconMinSize;
-        if (ImGui.SliderInt("Min size (far away)##gmin", ref gMin, 8, 50))
-        { cfg.GatheringIconMinSize = gMin; changed = true; }
-        int gMax = (int)cfg.GatheringIconMaxSize;
-        if (ImGui.SliderInt("Max size (close up)##gmax", ref gMax, 8, 60))
-        { cfg.GatheringIconMaxSize = gMax; changed = true; }
+        float gMin = cfg.GatheringIconMinSize, gMax = cfg.GatheringIconMaxSize;
+        if (DrawSizeSliders(ref gMin, ref gMax, 50, 60, "g"))
+        { cfg.GatheringIconMinSize = gMin; cfg.GatheringIconMaxSize = gMax; changed = true; }
         ImGui.Unindent();
         ImGui.EndDisabled();
 
@@ -668,13 +593,52 @@ public sealed class ConfigWindow : Window
     private static bool DrawTreasureTab(Configuration cfg)
     {
         if (!ImGui.BeginTabItem("Treasure")) return false;
-        bool    changed = false;
         bool    b = cfg.ShowTreasure;
         Vector4 c = cfg.TreasureColor;
+        bool changed = DrawEnableAndColor("tres", "Treasure", ref b, ref c);
+        cfg.ShowTreasure = b; cfg.TreasureColor = c;
 
-        if (ImGui.Checkbox("##tres_en", ref b))           { cfg.ShowTreasure = b;       changed = true; }
-        ImGui.SameLine();
-        if (ImGui.ColorEdit4("Treasure##tres_c", ref c, ColorPickerFlags))   { cfg.TreasureColor = c; changed = true; }
+        ImGui.Indent();
+        ImGui.BeginDisabled(!cfg.ShowTreasure);
+
+        float trMin = cfg.TreasureMinSize, trMax = cfg.TreasureMaxSize;
+        if (DrawSizeSliders(ref trMin, ref trMax, 50, 60, "tr"))
+        { cfg.TreasureMinSize = trMin; cfg.TreasureMaxSize = trMax; changed = true; }
+        if (ImGui.IsItemHovered())
+            ImGui.SetTooltip(
+                "Controls the size of EVERY treasure marker — the chest icon below\n" +
+                "AND the plain dot fallback used when none applies.");
+
+        ImGui.Spacing();
+
+        bool trIcon = cfg.ShowTreasureIcons;
+        if (ImGui.Checkbox("Show real chest icon##tricon", ref trIcon))
+        { cfg.ShowTreasureIcons = trIcon; changed = true; }
+        if (ImGui.IsItemHovered())
+            ImGui.SetTooltip(
+                "Shows a real treasure-chest icon instead of a plain dot. There's no\n" +
+                "game-data sheet that exposes a chest's visual type from its BaseId,\n" +
+                "so every coffer currently shows the same icon (below) rather than\n" +
+                "trying to resolve a per-chest variant.");
+
+        ImGui.Indent();
+        ImGui.BeginDisabled(!cfg.ShowTreasureIcons);
+
+        int trIconId = cfg.TreasureIconId;
+        ImGui.SetNextItemWidth(90f);
+        if (ImGui.InputInt("Icon ID##triconid", ref trIconId, 0, 0))
+        { cfg.TreasureIconId = Math.Max(0, trIconId); changed = true; }
+        if (ImGui.IsItemHovered())
+            ImGui.SetTooltip(
+                "Game icon ID shown for every treasure coffer — 60354 / 60355 / 60356\n" +
+                "are three known treasure-chest icon variants. Swap in whichever one\n" +
+                "actually looks right once you've seen it in-game.");
+
+        ImGui.EndDisabled(); // !cfg.ShowTreasureIcons
+        ImGui.Unindent();
+
+        ImGui.EndDisabled(); // !cfg.ShowTreasure
+        ImGui.Unindent();
 
         ImGui.EndTabItem();
         return changed;
@@ -685,13 +649,10 @@ public sealed class ConfigWindow : Window
     private static bool DrawAetherytesTab(Configuration cfg)
     {
         if (!ImGui.BeginTabItem("Aetherytes")) return false;
-        bool    changed = false;
         bool    b = cfg.ShowAetherytes;
         Vector4 c = cfg.AetheryteColor;
-
-        if (ImGui.Checkbox("##aeth_en", ref b))           { cfg.ShowAetherytes = b;     changed = true; }
-        ImGui.SameLine();
-        if (ImGui.ColorEdit4("Aetherytes##aeth_c", ref c, ColorPickerFlags)) { cfg.AetheryteColor = c; changed = true; }
+        bool changed = DrawEnableAndColor("aeth", "Aetherytes", ref b, ref c);
+        cfg.ShowAetherytes = b; cfg.AetheryteColor = c;
 
         ImGui.Indent();
         ImGui.BeginDisabled(!cfg.ShowAetherytes);
@@ -716,12 +677,9 @@ public sealed class ConfigWindow : Window
                 "Falls back to the colour dot below only if an icon somehow doesn't\n" +
                 "resolve to a loadable texture.");
 
-        int aMin = (int)cfg.AetheryteIconMinSize;
-        if (ImGui.SliderInt("Min size (far away)##amin", ref aMin, 8, 50))
-        { cfg.AetheryteIconMinSize = aMin; changed = true; }
-        int aMax = (int)cfg.AetheryteIconMaxSize;
-        if (ImGui.SliderInt("Max size (close up)##amax", ref aMax, 8, 60))
-        { cfg.AetheryteIconMaxSize = aMax; changed = true; }
+        float aMin = cfg.AetheryteIconMinSize, aMax = cfg.AetheryteIconMaxSize;
+        if (DrawSizeSliders(ref aMin, ref aMax, 50, 60, "a"))
+        { cfg.AetheryteIconMinSize = aMin; cfg.AetheryteIconMaxSize = aMax; changed = true; }
         if (ImGui.IsItemHovered())
             ImGui.SetTooltip(
                 "Controls the size of EVERY aetheryte marker — the real icon above\n" +
@@ -750,43 +708,38 @@ public sealed class ConfigWindow : Window
     private static bool DrawFatesTab(Configuration cfg)
     {
         if (!ImGui.BeginTabItem("FATEs")) return false;
-        bool    changed = false;
         bool    fateB = cfg.ShowFates;
         Vector4 fateC = cfg.FateColor;
 
         ImGui.TextDisabled("Independent of every other tab's toggles.");
         ImGui.Spacing();
 
-        if (ImGui.Checkbox("##fates_en", ref fateB))      { cfg.ShowFates = fateB;  changed = true; }
-        ImGui.SameLine();
-        if (ImGui.ColorEdit4("Show FATEs##fates_c", ref fateC, ColorPickerFlags)) { cfg.FateColor = fateC; changed = true; }
+        bool changed = DrawEnableAndColor("fates", "Show FATEs", ref fateB, ref fateC);
+        cfg.ShowFates = fateB; cfg.FateColor = fateC;
         if (ImGui.IsItemHovered())
             ImGui.SetTooltip(
                 "Shows active or about-to-start FATEs using their real game icon.\n" +
-                "The colour here is only a fallback dot, used if the icon texture\n" +
-                "hasn't loaded yet. Works even with every marker category on every\n" +
-                "other tab turned off — FATEs are a separate kind of point of\n" +
-                "interest, not \"an enemy\".");
+                "FATEs now sort in the same pass as every other marker, so closer\n" +
+                "items always paint on top. Detection range = Detection tab range\n" +
+                "× the multiplier below. Works even with all other markers off.");
 
         ImGui.Indent();
         ImGui.BeginDisabled(!fateB);
 
-        int fateDist = (int)cfg.MaxFateDistance;
-        if (ImGui.SliderInt("Detection range (yalms)##fatedist", ref fateDist, 30, 400))
-        { cfg.MaxFateDistance = fateDist; changed = true; }
+        float fateMul = cfg.FateDistanceMultiplier;
+        if (ImGui.SliderFloat("Distance multiplier##fatemul", ref fateMul, 0.5f, 5.0f, "%.1f×"))
+        { cfg.FateDistanceMultiplier = Math.Max(0.5f, fateMul); changed = true; }
         if (ImGui.IsItemHovered())
             ImGui.SetTooltip(
-                "Much larger by default than the other markers' range — FATEs are\n" +
-                "meant to be discoverable from well outside normal combat awareness.\n" +
-                "This is FATEs' own range, separate from the Detection tab's slider.");
+                "FATEs are detected up to (Detection tab range × this value) yalms.\n" +
+                "At 2.5× with the default 100 y detection range, FATEs appear\n" +
+                "up to 250 y away — zone-wide, discoverable long before you're near them.");
+        ImGui.TextDisabled($"Effective FATE range: {cfg.MaxMarkerDistance * cfg.FateDistanceMultiplier:F0} yalms");
 
-        int fateMin = (int)cfg.FateIconMinSize;
-        if (ImGui.SliderInt("Min icon size (far away)##fatemin", ref fateMin, 8, 50))
-        { cfg.FateIconMinSize = fateMin; changed = true; }
-
-        int fateMax = (int)cfg.FateIconMaxSize;
-        if (ImGui.SliderInt("Max icon size (close up)##fatemax", ref fateMax, 8, 64))
-        { cfg.FateIconMaxSize = fateMax; changed = true; }
+        float fateMin = cfg.FateIconMinSize, fateMax = cfg.FateIconMaxSize;
+        if (DrawSizeSliders(ref fateMin, ref fateMax, 50, 64, "fate",
+                             "Min icon size (far away)", "Max icon size (close up)"))
+        { cfg.FateIconMinSize = fateMin; cfg.FateIconMaxSize = fateMax; changed = true; }
 
         ImGui.EndDisabled();
         ImGui.Unindent();
@@ -798,4 +751,33 @@ public sealed class ConfigWindow : Window
     // Compact colour-edit flags: show only the small swatch, not text inputs
     private static readonly ImGuiColorEditFlags ColorPickerFlags =
         ImGuiColorEditFlags.NoInputs | ImGuiColorEditFlags.AlphaBar;
+
+    // ── Shared tab building blocks ──────────────────────────────────────────
+    // Every simple marker tab (Enemies/NPCs/Gathering/Treasure/Aetherytes/FATEs/
+    // Players) starts with a "[enable] Label [color]" header and most then have a
+    // min/max size slider pair — these two helpers cover that boilerplate once.
+
+    /// <summary>"[checkbox] label [color swatch]" header row shared by every marker tab.</summary>
+    private static bool DrawEnableAndColor(string idPrefix, string label, ref bool enabled, ref Vector4 color)
+    {
+        bool changed = false;
+        if (ImGui.Checkbox($"##{idPrefix}_en", ref enabled)) changed = true;
+        ImGui.SameLine();
+        if (ImGui.ColorEdit4($"{label}##{idPrefix}_c", ref color, ColorPickerFlags)) changed = true;
+        return changed;
+    }
+
+    /// <summary>Min/max size slider pair (far-away / close-up) shared by every marker tab with a size range.</summary>
+    private static bool DrawSizeSliders(
+        ref float min, ref float max, int minHi, int maxHi, string idPrefix,
+        string minLabel = "Min size (far away)", string maxLabel = "Max size (close up)", int lo = 8)
+    {
+        bool changed = false;
+        int mn = (int)min;
+        if (ImGui.SliderInt($"{minLabel}##{idPrefix}min", ref mn, lo, minHi)) { min = mn; changed = true; }
+        int mx = (int)max;
+        if (ImGui.SliderInt($"{maxLabel}##{idPrefix}max", ref mx, lo, maxHi)) { max = mx; changed = true; }
+        return changed;
+    }
 }
+

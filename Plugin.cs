@@ -28,6 +28,7 @@ public sealed class Plugin : IDalamudPlugin
         INamePlateGui namePlateGui,
         ITextureProvider textureProvider,
         IFateTable fateTable,
+        ICondition condition,
         IDataManager dataManager,
         IPluginLog pluginLog)
     {
@@ -39,7 +40,7 @@ public sealed class Plugin : IDalamudPlugin
 
         compassHud = new CompassHud(
             clientState, objectTable, targetManager, namePlateGui, textureProvider, fateTable,
-            dataManager, Config, pluginLog);
+            condition, dataManager, Config, pluginLog);
         configWindow = new ConfigWindow(this);
 
         windowSystem.AddWindow(configWindow);

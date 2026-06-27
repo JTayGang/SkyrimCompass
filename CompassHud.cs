@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Numerics;
+using Dalamud.Game.ClientState.Conditions;
 using Dalamud.Game.ClientState.Fates;
 using Dalamud.Game.ClientState.Objects.Enums;
 using Dalamud.Game.ClientState.Objects.SubKinds;
@@ -17,9 +18,8 @@ using Lumina.Excel.Sheets;
 namespace SkyrimCompass;
 
 /// <summary>
-/// Renders a Skyrim-style compass bar onto the ImGui foreground draw list.
-/// Uses a fisheye/lens projection so the centre looks normal while the edges
-/// compress more degrees into each pixel, revealing a wider FOV without clutter.
+/// Renders a Skyrim-style compass bar via ImGui foreground draw list. Uses a
+/// fisheye/lens projection so edges compress more degrees per pixel, widening FOV.
 /// </summary>
 public sealed class CompassHud : IDisposable
 {
@@ -29,111 +29,53 @@ public sealed class CompassHud : IDisposable
     private readonly INamePlateGui namePlateGui;
     private readonly ITextureProvider textureProvider;
     private readonly IFateTable fateTable;
+    private readonly ICondition condition;
     private readonly Configuration config;
     private readonly IPluginLog log;
 
-    // GameObjectId -> current nameplate marker icon ID (MSQ/side quest/etc.), refreshed
-    // every time the game updates nameplate data. 0/absent = no active marker.
+    // GameObjectId -> current nameplate marker icon ID (quest/etc.), refreshed every
+    // nameplate update. 0/absent = no active marker.
     private readonly Dictionary<ulong, int> npcMarkerIcons = new();
 
-    // BaseId -> resolved Mining/Botany (etc.) icon ID. Unlike npcMarkerIcons this never
-    // needs refreshing — a gathering node's type is static game data, not state that
-    // changes during play — so it's cached permanently once resolved.
+    // BaseId -> resolved Mining/Botany icon ID. Static game data, cached permanently.
     private readonly Dictionary<uint, int> gatheringIconCache = new();
     private readonly ExcelSheet<GatheringPoint> gatheringPointSheet;
     private readonly ExcelSheet<GatheringPointBase> gatheringPointBaseSheet;
     private readonly ExcelSheet<GatheringType> gatheringTypeSheet;
 
-    // BaseId -> NPC title text (e.g. "Merchant & Mender"), cached permanently — static
-    // game data. Shared by every title-keyword icon check (Mender, Shop, and whatever
-    // gets added next) rather than one bool cache per category.
+    // BaseId -> NPC title text (e.g. "Merchant & Mender"), cached permanently. Shared
+    // by every title-keyword check (Mender, Shop, ...).
     private readonly Dictionary<uint, string> npcTitleCache = new();
     private readonly ExcelSheet<ENpcResident> npcResidentSheet;
     private readonly ExcelSheet<ClassJob>     classJobSheet;
 
-    // Curated keyword sets, each confirmed against real frequency in the actual
-    // ENpcResident sheet data before being added (not guessed).
+    // Keyword sets, each confirmed against real ENpcResident sheet frequency.
     private static readonly string[] MenderTitleKeywords = { "Mender" };
 
-    // Reused every frame by RenderMarkers/RenderFates to sort markers by distance
-    // before drawing, so closer markers paint on top of farther ones instead of in
-    // whatever order objectTable/fateTable happen to enumerate. Fields (not locals)
-    // purely to avoid re-allocating a List every frame.
-    private readonly List<MarkerCandidate> markerCandidates = new();
-    private readonly List<FateCandidate>   fateCandidates   = new();
+    // Unified candidate list reused every frame (no per-frame alloc). Holds both
+    // game-object markers and FATE markers so one sort pass gives correct
+    // closer-on-top draw order across all entity types.
+    // Obj != null → game-object entry; Fate != null → FATE entry.
+    // T is the distance fraction normalised within each entry's own category range.
+    private readonly List<(IGameObject? Obj, IFate? Fate, float Dist, float Delta, float T, uint Col)> allCandidates = new();
 
     /// <summary>
-    /// A marker that's already passed every RenderMarkers filter (range, color, FOV),
-    /// carrying just enough precomputed data that the draw pass doesn't need to redo
-    /// any of that work once the list is sorted by distance.
-    /// </summary>
-    private readonly struct MarkerCandidate
-    {
-        public readonly IGameObject Obj;
-        public readonly float       Dist;
-        public readonly float       Delta;
-        public readonly uint        Col;
-
-        public MarkerCandidate(IGameObject obj, float dist, float delta, uint col)
-        {
-            Obj = obj; Dist = dist; Delta = delta; Col = col;
-        }
-    }
-
-    /// <summary>Same idea as <see cref="MarkerCandidate"/>, for RenderFates.</summary>
-    private readonly struct FateCandidate
-    {
-        public readonly IFate Fate;
-        public readonly float Dist;
-        public readonly float Delta;
-
-        public FateCandidate(IFate fate, float dist, float delta)
-        {
-            Fate = fate; Dist = dist; Delta = delta;
-        }
-    }
-
-    /// <summary>
-    /// Multiplier applied to NPC marker icons (quest/Mender/Shop) and the player party
-    /// role/job icon, on top of their normal size formula. Most of these game icon
-    /// textures have a fair amount of transparent padding baked in around the actual
-    /// glyph, so drawing them at the same bounding-box size as a plain dot makes the
-    /// visible icon art look noticeably smaller than the dot. A multiplier (rather than
-    /// a flat px offset) keeps that compensation proportional at every distance — a flat
-    /// offset would dominate the size at long range, where the base size shrinks toward
-    /// zero but the offset doesn't, so small/far icons stopped shrinking properly and
-    /// effectively hit a minimum size floor. Deliberately NOT applied to Gathering icons,
-    /// which weren't reported as undersized. Aetheryte icons get their own larger
-    /// multiplier below instead, since their texture padding runs heavier than the rest.
-    /// Also applied to named player icon overrides, keeping all player markers sized
-    /// consistently with the party role icon that uses the same multiplier.
+    /// Extra scale for NPC/party-role icons (quest/Mender/Shop, job icon, player
+    /// overrides) on top of their size formula — their textures have transparent
+    /// padding that would otherwise make the icon look smaller than a plain dot.
+    /// A multiplier (not a flat px offset) keeps that proportional at long range.
+    /// NOT applied to Gathering icons (not undersized) or Aetheryte (own multiplier below).
     /// </summary>
     private const float IconSizeMultiplier = 1.5f;
-    /// <summary>
-    /// Same idea as <see cref="IconSizeMultiplier"/>, but specifically for aetheryte
-    /// icons (both the Big and Aethernet Shard variants) — their source textures carry
-    /// noticeably more internal padding than the other icon sets, so the shared 1.4x
-    /// wasn't enough to bring them up to the equivalent dot size. Only applied to the
-    /// drawn icon itself, not the plain-dot fallback (see RenderMarkers), so the dot
-    /// stays at the true reference size for whenever icons are off.
-    /// </summary>
+    /// <summary>Like <see cref="IconSizeMultiplier"/> but for aetheryte icons, which need more compensation. Dot fallback unaffected.</summary>
     private const float AetheryteIconSizeMultiplier = 1.75f;
     private static readonly string[] ShopTitleKeywords   =
     {
-        // Original confirmed set
         "Merchant", "Vendor", "Trader",
-        // Confirmed via real /compass debug output + frequency check against ENpcResident
-        "Sutler",       // 12 matches, all camp/field vendors — zero false positives
-        "Supplier",     // 133 matches, all genuine supply vendors — zero false positives
-        // "Monger" alone catches rumormonger/gossipmonger/winemonger (flavor NPCs, not shops)
-        // so we use the specific vendor sub-types confirmed against real data instead:
-        "Junkmonger", "Fishmonger", "Dyemonger",
-        // Further confirmed via /compass debug + full sheet sample — zero false positives each:
-        "Jeweler",      // 8 matches (Independent Jeweler, Jeweler, traveling jeweler)
-        "Apothecary",   // 19 matches (Apothecary, Independent Apothecary, various X apothecary)
-        "Culinarian",   // 16 matches (Culinarian, Independent Culinarian, various X culinarian)
-        // NOT added (checked and rejected): Alchemist (52 matches, almost all quest/ambient lore
-        // NPCs not vendors), Carpenter (all ambient background), Armorer (partially ambiguous)
+        // All below confirmed via /compass debug + ENpcResident frequency check, zero false positives:
+        "Sutler", "Supplier", "Junkmonger", "Fishmonger", "Dyemonger",
+        "Jeweler", "Apothecary", "Culinarian",
+        // Rejected after checking: Alchemist (mostly lore NPCs), Carpenter (ambient), Armorer (ambiguous)
     };
 
     private static readonly (float Deg, string Label, bool IsMajor)[] Directions =
@@ -155,6 +97,7 @@ public sealed class CompassHud : IDisposable
         INamePlateGui namePlateGui,
         ITextureProvider textureProvider,
         IFateTable fateTable,
+        ICondition condition,
         IDataManager dataManager,
         Configuration config,
         IPluginLog log)
@@ -165,6 +108,7 @@ public sealed class CompassHud : IDisposable
         this.namePlateGui    = namePlateGui;
         this.textureProvider = textureProvider;
         this.fateTable       = fateTable;
+        this.condition       = condition;
         this.config          = config;
         this.log             = log;
 
@@ -174,9 +118,7 @@ public sealed class CompassHud : IDisposable
         npcResidentSheet        = dataManager.GetExcelSheet<ENpcResident>();
         classJobSheet           = dataManager.GetExcelSheet<ClassJob>();
 
-        // OnDataUpdate (not OnNamePlateUpdate) is the one that fires every frame with
-        // ALL current nameplates, not just ones that changed — exactly what we need to
-        // keep a complete, accurate icon cache rather than only tracking deltas.
+        // OnDataUpdate fires every frame with ALL current nameplates (not just deltas).
         this.namePlateGui.OnDataUpdate += OnNamePlateDataUpdate;
     }
 
@@ -201,6 +143,16 @@ public sealed class CompassHud : IDisposable
     public unsafe void Draw()
     {
         if (!config.Enabled) return;
+        // No reason to render a navigation aid while the camera's locked to a cutscene.
+        // Checking all three flags is the pattern other Dalamud plugins (PeepingTom,
+        // Pictomancy, etc.) settled on: OccupiedInCutSceneEvent covers in-engine story
+        // cutscenes, WatchingCutscene covers the big skippable ones (and gpose),
+        // WatchingCutscene78 covers a newer non-skippable variant.
+        if (config.HideDuringCutscenes && (
+            condition[ConditionFlag.OccupiedInCutSceneEvent] ||
+            condition[ConditionFlag.WatchingCutscene] ||
+            condition[ConditionFlag.WatchingCutscene78]))
+            return;
 
         var player = objectTable.LocalPlayer;
         if (player == null) return;
@@ -210,16 +162,9 @@ public sealed class CompassHud : IDisposable
 
         if (config.UseCameraDirection)
         {
-            // CameraManager->Camera is the normal in-game world camera (FieldOffset 0x00,
-            // documented in FFXIVClientStructs as "[0] Camera (normal in-game camera)").
-            //
-            // The struct's doc comment claims DirH is "0 = north, increasing clockwise"
-            // (i.e. already standard compass-bearing direction), but in-game testing
-            // showed otherwise: N/S tracked correctly while E/W came out mirrored —
-            // the exact signature of DirH actually increasing counter-clockwise relative
-            // to true compass bearing. Negating it corrects E/W without touching N/S
-            // (negation is a fixed-point identity at 0° and 180°, which is why those two
-            // were unaffected by the bug).
+            // CameraManager->Camera = normal in-game world camera. Its doc comment claims
+            // DirH is "0=north, increasing clockwise", but testing showed E/W mirrored
+            // (N/S fine) — DirH actually increases counter-clockwise. Negate to fix.
             var camManager = CameraManager.Instance();
             var camera     = camManager != null ? camManager->Camera : null;
 
@@ -227,24 +172,17 @@ public sealed class CompassHud : IDisposable
             {
                 headingRad = -camera->DirH;
 
-                // First-person uses a different DirH convention than third-person —
-                // confirmed via in-game testing: entering first person flips the heading
-                // by exactly 180° with no other symptom. Likely cause: in third person,
-                // DirH appears to encode the camera's ORBITAL position angle around the
-                // character, which is 180° opposite the direction it's actually looking
-                // (an orbiting camera looks back toward its own pivot). First person has
-                // no orbit at all, so DirH becomes a direct view angle instead — a clean
-                // 180° shift in meaning. Gating this on ZoomMode keeps third person
-                // (already verified correct) completely untouched.
+                // First-person uses a different DirH convention (confirmed in-game: exactly
+                // 180° off, no other symptom). Likely cause: third-person DirH encodes the
+                // camera's orbital angle (180° from its actual look direction); first-person
+                // has no orbit, so DirH becomes a direct view angle instead.
                 if (camera->ZoomMode == CameraZoomMode.FirstPerson)
                     headingRad += MathF.PI;
 
                 if (config.UseCameraPosition)
                 {
-                    // LastPosition sits directly next to LastLookAtVector in the struct —
-                    // that adjacent eye/look-at pairing is the standard convention 3D camera
-                    // systems use, which is why this is the camera's actual world position
-                    // rather than some other camera-related point (e.g. its pivot/target).
+                    // LastPosition sits next to LastLookAtVector — the standard eye/look-at
+                    // pairing, confirming this is the camera's actual world position.
                     var camPos = camera->LastPosition;
                     if (!float.IsNaN(camPos.X) && !float.IsNaN(camPos.Y) && !float.IsNaN(camPos.Z))
                         originPos = camPos;
@@ -252,8 +190,8 @@ public sealed class CompassHud : IDisposable
             }
             else if (!float.IsNaN(player.Rotation))
             {
-                // Camera pointer unavailable this frame (e.g. very first frames after
-                // zoning) — fall back to facing direction rather than freezing the bar.
+                // Camera pointer unavailable (e.g. first frames after zoning) — fall back
+                // to facing direction rather than freezing the bar.
                 headingRad = MathF.PI - player.Rotation;
             }
             else
@@ -284,27 +222,17 @@ public sealed class CompassHud : IDisposable
     // ── Lens projection ───────────────────────────────────────────────────────
 
     /// <summary>
-    /// Maps a compass angle offset (<paramref name="delta"/>, in degrees) to a
-    /// signed pixel offset from the bar centre.
-    ///
-    /// The projection uses f(u) = 1 − (1−u)^k, where u = |delta| / extendedHalf
-    /// and k = lensStrength.  At the centre the slope equals the original linear
-    /// ppd exactly; toward the edges it falls off, compressing more degrees into
-    /// fewer pixels and revealing extra FOV without cluttering the centre.
-    ///
-    /// lensStrength = 1.0 → pure linear (no effect).
+    /// Maps a compass angle offset (degrees) to a signed pixel offset from bar centre.
+    /// f(u) = 1-(1-u)^k, u = |delta|/extendedHalf, k = lensStrength. Slope matches linear
+    /// ppd at centre, falls off toward edges (more degrees per pixel = wider FOV).
+    /// lensStrength = 1.0 → pure linear.
     /// </summary>
     private static float Project(float delta, float halfVis, float barHalfW, float lensStr)
     {
-        // Extended visible half-range (degrees shown on each side of centre)
-        float extHalf = halfVis * lensStr;
-
+        float extHalf = halfVis * lensStr;            // extended visible half-range (deg)
         float absD    = MathF.Min(MathF.Abs(delta), extHalf);
         float u       = absD / extHalf;                        // 0 → 1
-
-        // f(u) = 1 − (1−u)^k  →  f(0)=0, f(1)=1, f'(0)=k
-        // Scale: dx/dδ|₀ = barHalfW * k / extHalf = barHalfW / halfVis = ppd_original ✓
-        float f       = 1f - MathF.Pow(1f - u, lensStr);
+        float f       = 1f - MathF.Pow(1f - u, lensStr);        // f(0)=0, f(1)=1, f'(0)=k
 
         return (delta >= 0f ? 1f : -1f) * barHalfW * f;
     }
@@ -354,12 +282,9 @@ public sealed class CompassHud : IDisposable
         dl.AddLine(V(bx + 1f, by + 1f), V(bx + bw - 1f, by + 1f), 0x1AFFFFFF, 1f);
 
         // ── 2. Bar border ──────────────────────────────────────────────────────
-        // Drawn here (before markers/icons) rather than after them so anything that
-        // overlaps it — most notably icons, which can now render past the bar's clip
-        // rect (see TryDrawIcon) and are frequently taller than the bar itself — paints
-        // over the border instead of the border cutting a line across the icon. Ticks
-        // and labels below are unaffected either way since their own clip keeps them
-        // 1px inside this border's edge, never actually touching it.
+        // Drawn before markers/icons so icons (which can render past the bar's clip
+        // rect and are often taller than the bar) paint over the border, not the
+        // other way round.
         dl.AddRect(V(bx, by), V(bx + bw, by + bh), borderCol, 0f, ImDrawFlags.None, 1.5f);
 
         // ── 3. Clip to bar ────────────────────────────────────────────────────
@@ -415,13 +340,11 @@ public sealed class CompassHud : IDisposable
             dl.AddText(font, fontSize, V(tx, ty), labelCol, label);
         }
 
-        // ── 6. Entity markers (centred, lens-projected, alpha-faded) ─────────
-        if (config.ShowAnyMarkers)
-            RenderMarkers(dl, cx, cy, halfVis, barHalfW, lensStr, heading, player, originPos);
-
-        // Deliberately NOT gated behind ShowAnyMarkers — FATEs are independent of every
-        // other marker toggle, so this needs to work even with all of them off.
-        RenderFates(dl, cx, cy, halfVis, barHalfW, lensStr, heading, originPos);
+        // ── 6. Entity markers + FATEs (single sorted pass) ───────────────────
+        // Both types share one candidate list and sort so closer items always paint
+        // on top regardless of type. Game objects are gated behind ShowAnyMarkers;
+        // FATEs use their own ShowFates flag and are unaffected by that toggle.
+        RenderAllMarkers(dl, cx, cy, halfVis, barHalfW, lensStr, heading, player, originPos);
 
         dl.PopClipRect();
 
@@ -461,98 +384,102 @@ public sealed class CompassHud : IDisposable
         dl.AddCircleFilled(V(cx, cy), 2.5f, color);
     }
 
-    // ── Entity markers ────────────────────────────────────────────────────────
+    // ── Unified marker + FATE render (single sorted pass) ────────────────────
 
-    private void RenderMarkers(
+    private void RenderAllMarkers(
         ImDrawListPtr dl,
         float cx, float cy,
         float halfVis, float barHalfW, float lensStr,
         float heading, IPlayerCharacter player, Vector3 originPos)
     {
-        var   pp        = originPos;   // character position, or camera position if both toggles are on
-        float maxDistSq = config.MaxMarkerDistance * config.MaxMarkerDistance;
-        float extHalf   = halfVis * lensStr;
+        var   pp            = originPos;
+        float maxDist       = config.MaxMarkerDistance;
+        float maxDistSq     = maxDist * maxDist;
+        float fateMaxDist   = maxDist * config.FateDistanceMultiplier;
+        float fateMaxDistSq = fateMaxDist * fateMaxDist;
+        float extHalf       = halfVis * lensStr;
 
-        // Pass 1: filter every object down to what actually qualifies for a marker
-        // (range, color, FOV — exactly the checks this loop always did), then sort by
-        // distance. ImGui paints in draw-call order, so without this the stacking
-        // order when two markers overlap on screen was effectively whatever order
-        // objectTable happens to enumerate in, not necessarily the closer one on top.
-        markerCandidates.Clear();
+        allCandidates.Clear();
 
-        foreach (var obj in objectTable)
+        // ── Collect game-object markers ──────────────────────────────────────
+        if (config.ShowAnyMarkers)
         {
-            // Identity check stays keyed on the character regardless of which origin
-            // bearings are measured from — we're still always excluding "yourself".
-            if (obj == null) continue;
-            if (obj.EntityId == player.EntityId) continue;
+            foreach (var obj in objectTable)
+            {
+                if (obj == null || obj.EntityId == player.EntityId) continue;
 
-            float dx  = obj.Position.X - pp.X;
-            float dy  = obj.Position.Y - pp.Y;
-            float dz  = obj.Position.Z - pp.Z;
-            // Full 3D distance (drives range cutoff, dot size, and fade) so something
-            // far above/below you doesn't register as "right next to you" just because
-            // it's horizontally close. Bearing below intentionally stays 2D (dx, dz
-            // only) — height shouldn't shove a dot sideways on the compass, only affect
-            // how prominent it looks.
-            float dsq = dx * dx + dy * dy + dz * dz;
+                uint col = MarkerColor(obj, player);
+                if (col == 0) continue;
 
-            if (dsq > maxDistSq || dsq < 0.25f) continue;
+                if (!TryComputeBearing(obj.Position, pp, heading, maxDistSq, extHalf,
+                                       out float dist, out float delta))
+                    continue;
 
-            uint col = MarkerColor(obj, player);
-            if (col == 0) continue;
-
-            float bearing = Normalize(MathF.Atan2(dx, -dz) * (180f / MathF.PI));
-            float delta   = Delta(heading, bearing);
-            if (MathF.Abs(delta) > extHalf) continue;
-
-            markerCandidates.Add(new MarkerCandidate(obj, MathF.Sqrt(dsq), delta, col));
+                allCandidates.Add((obj, null, dist, delta, 1f - dist / maxDist, col));
+            }
         }
 
-        // Farthest first, closest last — later draw calls paint on top in ImGui, so
-        // this puts the nearer marker visually in front whenever two overlap.
-        markerCandidates.Sort((a, b) => b.Dist.CompareTo(a.Dist));
-
-        // Pass 2: same per-marker visuals/draw logic the loop always had, just walked
-        // in distance-sorted order instead of objectTable's native order.
-        foreach (var candidate in markerCandidates)
+        // ── Collect FATE markers (independent of ShowAnyMarkers) ─────────────
+        if (config.ShowFates)
         {
-            var   obj   = candidate.Obj;
-            uint  col   = candidate.Col;
+            foreach (var fate in fateTable)
+            {
+                if (fate == null) continue;
+                if (fate.State != FateState.Running && fate.State != FateState.Preparing)
+                    continue;
+
+                if (!TryComputeBearing(fate.Position, pp, heading, fateMaxDistSq, extHalf,
+                                       out float dist, out float delta))
+                    continue;
+
+                allCandidates.Add((null, fate, dist, delta, 1f - dist / fateMaxDist, 0u));
+            }
+        }
+
+        if (allCandidates.Count == 0) return;
+
+        // Farthest first → closest last: later ImGui draw calls paint on top.
+        allCandidates.Sort((a, b) => b.Dist.CompareTo(a.Dist));
+
+        foreach (var candidate in allCandidates)
+        {
             float delta = candidate.Delta;
-            float dist  = candidate.Dist;
-
-            // Apply lens projection for screen X
-            float sx = cx + Project(delta, halfVis, barHalfW, lensStr);
-
-            float t    = 1f - dist / config.MaxMarkerDistance;   // 1 = close, 0 = at max range
-            // Fallback dot radius for kinds that don't have their own page-level size
-            // slider (Gathering without icon, Treasure). Players, NPCs, Enemies, and
-            // Aetherytes compute their own size below from their page's slider
-            // instead, so each slider covers every marker on that page.
-            float r    = 3f + 7f * t;
-
-            // Three-zone alpha curve, shared with RenderFates — see ComputeFadeAlpha.
-            // Multiplied by the same edge fade ticks/labels use (LensEdgeAlpha) so
-            // markers ease out to fully transparent by extHalf instead of hard-cutting
-            // off — previously there was no fade here at all, just the hard `continue`
-            // above, which was tolerable for small clipped dots but became obvious once
-            // icons grew large enough to render past the bar's edge unclipped.
+            float t     = candidate.T;
+            float sx    = cx + Project(delta, halfVis, barHalfW, lensStr);
             float alpha = ComputeFadeAlpha(t) * LensEdgeAlpha(delta, halfVis, extHalf);
 
-            // Categories with a real game icon available get that instead of a plain
-            // dot — the icon ID and its min/max size range both depend on which
-            // category this is, so each is resolved here before the shared draw call.
+            // ── FATE branch ───────────────────────────────────────────────────
+            if (candidate.Fate is { } fate)
+            {
+                float fateIconSize = Lerp(config.FateIconMinSize, config.FateIconMaxSize, t);
+                bool  drewFateIcon = fate.IconId > 0
+                                  && TryDrawIcon(dl, (int)fate.IconId, sx, cy, fateIconSize, alpha);
+                if (!drewFateIcon)
+                    DrawFilledDot(dl, sx, cy, (3f + 7f * t) * 2f, C(config.FateColor), alpha);
+                continue;
+            }
+
+            // ── Game-object branch ────────────────────────────────────────────
+            var  obj = candidate.Obj!;
+            uint col = candidate.Col;
+
+            // Fallback dot radius — only used by the Gathering-node else-branch below.
+            float r = 3f + 7f * t;
+
+            // Each category with a real icon resolves its iconId/iconSize here, in
+            // priority order, before the shared draw call below.
             int   iconId   = 0;
             float iconSize = 0f;
 
-            bool isAetheryteKind = ClassifyAetheryte(obj) != AetheryteNameKind.None;
+            bool  isAetheryteKind = ClassifyAetheryte(obj) != AetheryteNameKind.None;
+            // Shared by quest/Mender/Shop icons — every NPC icon category uses this range.
+            float npcIconSize = Lerp(config.NpcQuestIconMinSize, config.NpcQuestIconMaxSize, t)
+                              * IconSizeMultiplier;
 
             if (config.ShowAetheryteIcons && isAetheryteKind)
             {
                 iconId   = GetAetheryteIconId(obj);
-                iconSize = (config.AetheryteIconMinSize
-                         + (config.AetheryteIconMaxSize - config.AetheryteIconMinSize) * t)
+                iconSize = Lerp(config.AetheryteIconMinSize, config.AetheryteIconMaxSize, t)
                          * AetheryteIconSizeMultiplier;
             }
             else if (config.ShowNpcQuestIcons
@@ -560,29 +487,22 @@ public sealed class CompassHud : IDisposable
                 && npcMarkerIcons.TryGetValue(obj.GameObjectId, out int npcIcon))
             {
                 iconId   = npcIcon;
-                iconSize = (config.NpcQuestIconMinSize
-                         + (config.NpcQuestIconMaxSize - config.NpcQuestIconMinSize) * t)
-                         * IconSizeMultiplier;
+                iconSize = npcIconSize;
             }
             else if (config.ShowMenderIcons
                 && obj.ObjectKind == ObjectKind.EventNpc
                 && NpcMatchesKeywords(obj, GetNpcTitle(obj.BaseId), MenderTitleKeywords))
             {
-                // Shares the quest-marker size range above — one shared "any icon in
-                // place of an NPC dot" size knob rather than a separate slider pair.
+                // Shares the quest-marker size range above.
                 iconId   = config.MenderIconId;
-                iconSize = (config.NpcQuestIconMinSize
-                         + (config.NpcQuestIconMaxSize - config.NpcQuestIconMinSize) * t)
-                         * IconSizeMultiplier;
+                iconSize = npcIconSize;
             }
             else if (config.ShowShopIcons
                 && obj.ObjectKind == ObjectKind.EventNpc
                 && NpcMatchesKeywords(obj, GetNpcTitle(obj.BaseId), ShopTitleKeywords))
             {
                 iconId   = config.ShopIconId;
-                iconSize = (config.NpcQuestIconMinSize
-                         + (config.NpcQuestIconMaxSize - config.NpcQuestIconMinSize) * t)
-                         * IconSizeMultiplier;
+                iconSize = npcIconSize;
             }
             else if (config.ShowGatheringIcons && obj.ObjectKind == ObjectKind.GatheringPoint)
             {
@@ -590,9 +510,15 @@ public sealed class CompassHud : IDisposable
                 if (gatherIcon > 0)
                 {
                     iconId   = gatherIcon;
-                    iconSize = config.GatheringIconMinSize
-                             + (config.GatheringIconMaxSize - config.GatheringIconMinSize) * t;
+                    iconSize = Lerp(config.GatheringIconMinSize, config.GatheringIconMaxSize, t);
                 }
+            }
+            else if (config.ShowTreasureIcons && obj.ObjectKind == ObjectKind.Treasure)
+            {
+                // No data sheet exposes a coffer's visual type from its BaseId, so
+                // every coffer just shows the same configured icon.
+                iconId   = config.TreasureIconId;
+                iconSize = Lerp(config.TreasureMinSize, config.TreasureMaxSize, t);
             }
 
             bool drewIcon = iconId > 0 && TryDrawIcon(dl, iconId, sx, cy, iconSize, alpha);
@@ -601,51 +527,34 @@ public sealed class CompassHud : IDisposable
             {
                 if (obj.ObjectKind == ObjectKind.Pc)
                 {
-                    // Drives EVERY player marker below — plain ring, solid friend dot,
-                    // and the party role icon + its drop shadow — so the Players page's
-                    // size slider controls all of them together.
-                    float playerSize = config.PartyRoleIconMinSize
-                                      + (config.PartyRoleIconMaxSize - config.PartyRoleIconMinSize) * t;
-                    float playerR    = playerSize * 0.5f;
+                    // Drives every player marker: ring, friend dot, party role icon.
+                    float playerSize = Lerp(config.PartyRoleIconMinSize, config.PartyRoleIconMaxSize, t);
 
                     bool drewJobIcon = false;
 
                     if (config.ShowPartyRoleIcons && obj is ICharacter partyChar
                         && (partyChar.StatusFlags & StatusFlags.PartyMember) != 0)
                     {
-                        // Unbordered class/job icons confirmed at IDs 62001-62047 via
-                        // /xldata in-game. Formula: 62000 + ClassJob.RowId (RowId is
-                        // 1-indexed, so GLA=62001, PGL=62002, ... PIC=62042, etc.)
+                        // Unbordered class/job icons confirmed at 62001-62047 via /xldata:
+                        // 62000 + ClassJob.RowId (1-indexed: GLA=62001, PGL=62002, ...).
                         uint jobRowId  = partyChar.ClassJob.RowId;
                         int  jobIconId = jobRowId > 0 ? (int)(62000 + jobRowId) : 0;
 
                         if (jobIconId > 0)
                         {
-                            // Role-colored border + drop shadow behind the job icon —
-                            // Tank=blue, Healer=green, DPS=red, DoH/DoL=gray. Colors match
-                            // FFXIV's own role UI. The outer ring is the solid border,
-                            // sitting just past the icon's edge same as before. Behind
-                            // that, three filled circles step inward and fade out —
-                            // most visible right at the border, nearly gone by the centre
-                            // — faking a soft shadow falling inward from the border since
-                            // ImGui's draw list has no blur filter to do this for real.
-                            // Wrapped in PushUnclip/PopUnclip so these escape the bar's
-                            // clip rect the same way TryDrawIcon's image does below —
-                            // otherwise, near the bar's edge, the icon would render in
-                            // full while its own border/shadow got hard-cut behind it.
+                            // Role-colored ring + shadow (Tank=blue/Healer=green/DPS=red/
+                            // DoH-DoL=gray, matching FFXIV's role UI), unclipped so it
+                            // isn't cut at the bar's edge.
                             uint  roleCol      = GetRoleColor(partyChar);
                             float iconDrawSize = playerSize * IconSizeMultiplier;
                             float iconHalf     = iconDrawSize * 0.5f;
                             PushUnclip(dl);
-                            dl.AddCircle(V(sx, cy), iconHalf + 1.0f, WithAlpha(roleCol, alpha), 0, 3.0f);
-                            dl.AddCircleFilled(V(sx, cy), iconHalf * 0.85f, WithAlpha(roleCol, alpha * 0.6f));
-                            dl.AddCircleFilled(V(sx, cy), iconHalf * 0.65f, WithAlpha(roleCol, alpha * 0.4f));
-                            dl.AddCircleFilled(V(sx, cy), iconHalf * 0.45f, WithAlpha(roleCol, alpha * 0.2f));
+                            DrawOuterRing(dl, sx, cy, iconHalf, roleCol, alpha);
+                            DrawInwardShadow(dl, sx, cy, iconHalf, roleCol, alpha);
                             PopUnclip(dl);
 
-                            // Job icon drawn on top — if the icon ID doesn't resolve to a
-                            // loadable texture (e.g. a future job beyond the known range),
-                            // the role-colored border/shadow still shows as a useful fallback.
+                            // Drawn on top — if the job icon ID doesn't resolve (e.g. a
+                            // future job), the role ring/shadow still shows as a fallback.
                             TryDrawIcon(dl, jobIconId, sx, cy, iconDrawSize, alpha);
                             drewJobIcon = true;
                         }
@@ -653,13 +562,8 @@ public sealed class CompassHud : IDisposable
 
                     if (!drewJobIcon)
                     {
-                        // ── Named player icon override ────────────────────────────────────
-                        // Checked before the friend-dot / hollow-ring defaults so that an
-                        // explicit per-player configuration takes priority over those.
-                        // Party role icons (the block above) are higher priority still —
-                        // this path is only reached when the player is NOT in the party or
-                        // ShowPartyRoleIcons is off, matching the "replace the normal player
-                        // dot or filled dot" intent described in the feature request.
+                        // Named override checked before friend-dot/hollow-ring defaults;
+                        // party role icons (above) take priority over this.
                         PlayerIconOverride? nameOverride = null;
                         if (config.PlayerIconOverrides.Count > 0)
                         {
@@ -678,90 +582,39 @@ public sealed class CompassHud : IDisposable
 
                         if (nameOverride is not null)
                         {
-                            // Border ring, fill circles, and icon all share the same base radius —
-                            // derived from the player dot slider + global icon padding compensation,
-                            // same geometry as a party role icon. SizeMultiplier no longer scales
-                            // the draw quad; instead it shifts the UV window so the icon texture
-                            // zooms in or out while the rendered quad stays fixed at overrideHalf.
-                            // This means the icon can never grow past the border ring regardless
-                            // of how the multiplier is set.
-                            float overrideBaseSize = playerSize * IconSizeMultiplier;
-                            float overrideHalf     = overrideBaseSize * 0.5f;
+                            // Border, fill, and icon share one base size. SizeMultiplier
+                            // doesn't scale the draw quad — TryDrawIcon's uvZoom shifts
+                            // the UV window instead, so the icon can never grow past the
+                            // border ring.
+                            float overrideSize = playerSize * IconSizeMultiplier;
+                            float overrideHalf = overrideSize * 0.5f;
 
-                            // Fill and border are drawn first (behind the icon) and are
-                            // always rendered when enabled, even if the icon texture hasn't
-                            // loaded yet — matching how party role icons keep their
-                            // border/shadow visible regardless of whether the job icon resolves.
+                            // Fill/border drawn first and always shown when enabled, even
+                            // if the icon texture hasn't loaded — same as party role icons.
                             if (nameOverride.ShowFill || nameOverride.ShowBorder)
                             {
                                 PushUnclip(dl);
                                 if (nameOverride.ShowFill)
-                                {
-                                    // Three inward-fading circles — identical geometry to the
-                                    // party role icon's drop shadow, creating a soft bloom
-                                    // inward from the icon edge without a real blur pass.
-                                    uint fillU = C(nameOverride.FillColor);
-                                    dl.AddCircleFilled(V(sx, cy), overrideHalf * 0.85f, WithAlpha(fillU, alpha * 0.6f));
-                                    dl.AddCircleFilled(V(sx, cy), overrideHalf * 0.65f, WithAlpha(fillU, alpha * 0.4f));
-                                    dl.AddCircleFilled(V(sx, cy), overrideHalf * 0.45f, WithAlpha(fillU, alpha * 0.2f));
-                                }
+                                    DrawInwardShadow(dl, sx, cy, overrideHalf,
+                                                     C(nameOverride.FillColor), alpha);
                                 if (nameOverride.ShowBorder)
-                                {
-                                    // Solid outer ring just outside the icon bounding box —
-                                    // same geometry and thickness as the party role icon ring
-                                    // (radius = half + 1.0f, stroke width = 3.0f).
-                                    uint brdU = C(nameOverride.BorderColor);
-                                    dl.AddCircle(V(sx, cy), overrideHalf + 1.0f, WithAlpha(brdU, alpha), 0, 3.0f);
-                                }
+                                    DrawOuterRing(dl, sx, cy, overrideHalf,
+                                                  C(nameOverride.BorderColor), alpha);
                                 PopUnclip(dl);
                             }
 
-                            // UV window: SizeMultiplier > 1 zooms in (trims padding from the
-                            // texture edges), = 1 shows the full texture, < 1 zooms out.
-                            // The quad is always overrideHalf so the icon never escapes the ring.
-                            //   uvHalf = 0.5 / mult  →  mult=1.0: (0,0)→(1,1) full texture
-                            //                           mult=1.5: (1/6,1/6)→(5/6,5/6) cropped in
-                            //                           mult=0.8: (–1/8,–1/8)→(9/8,9/8) zoomed out
-                            bool drewOverrideIcon = false;
-                            if (nameOverride.IconBaseId > 0
-                                && textureProvider.TryGetFromGameIcon(
-                                       new GameIconLookup((uint)nameOverride.IconBaseId), out var overrideTex))
-                            {
-                                float    uvHalf = 0.5f / Math.Max(0.01f, nameOverride.SizeMultiplier);
-                                Vector2  uvMin  = new(0.5f - uvHalf, 0.5f - uvHalf);
-                                Vector2  uvMax  = new(0.5f + uvHalf, 0.5f + uvHalf);
-                                uint     tnt    = WithAlpha(0xFFFFFFFFu, alpha);
-                                var      tex    = overrideTex.GetWrapOrEmpty();
-
-                                PushUnclip(dl);
-                                if (nameOverride.ClipToCircle)
-                                    dl.AddImageRounded(
-                                        tex.Handle,
-                                        V(sx - overrideHalf, cy - overrideHalf),
-                                        V(sx + overrideHalf, cy + overrideHalf),
-                                        uvMin, uvMax, tnt,
-                                        overrideHalf, ImDrawFlags.RoundCornersAll);
-                                else
-                                    dl.AddImage(
-                                        tex.Handle,
-                                        V(sx - overrideHalf, cy - overrideHalf),
-                                        V(sx + overrideHalf, cy + overrideHalf),
-                                        uvMin, uvMax, tnt);
-                                PopUnclip(dl);
-                                drewOverrideIcon = true;
-                            }
+                            bool drewOverrideIcon = nameOverride.IconBaseId > 0
+                                && TryDrawIcon(dl, nameOverride.IconBaseId, sx, cy, overrideSize,
+                                               alpha, nameOverride.ClipToCircle,
+                                               nameOverride.SizeMultiplier);
 
                             if (!drewOverrideIcon)
                             {
-                                // Icon texture not yet loaded or ID is zero — fall back to a
-                                // plain dot so the player remains visible. Use the border color
-                                // as the dot tint when a border is configured (that's the user's
-                                // chosen accent), otherwise fall back to the standard player color.
+                                // Texture not loaded / ID is zero — fall back to a dot,
+                                // tinted with the border color if one's configured.
                                 uint fallbackCol = nameOverride.ShowBorder
-                                    ? C(nameOverride.BorderColor)
-                                    : col;
-                                dl.AddCircleFilled(V(sx, cy), playerR, WithAlpha(fallbackCol, alpha));
-                                dl.AddCircle(V(sx, cy), playerR + 0.8f, WithAlpha(0x66000000u, alpha));
+                                    ? C(nameOverride.BorderColor) : col;
+                                DrawFilledDot(dl, sx, cy, playerSize, fallbackCol, alpha);
                             }
                         }
                         else
@@ -772,79 +625,53 @@ public sealed class CompassHud : IDisposable
                                 && (ch.StatusFlags & StatusFlags.Friend) != 0;
 
                             if (isFriend)
-                            {
-                                dl.AddCircleFilled(V(sx, cy), playerR, WithAlpha(col, alpha));
-                                dl.AddCircle(V(sx, cy), playerR + 0.8f, WithAlpha(0x66000000u, alpha));
-                            }
+                                DrawFilledDot(dl, sx, cy, playerSize, col, alpha);
                             else
-                            {
-                                // Ring with transparent centre for non-friend, non-party players.
-                                dl.AddCircle(V(sx, cy), playerR, WithAlpha(col, alpha), 0, 2.0f);
-                                dl.AddCircle(V(sx, cy), playerR + 0.8f, WithAlpha(0x33000000u, alpha));
-                            }
+                                DrawHollowDot(dl, sx, cy, playerSize, col, alpha);
                         }
                     }
                 }
                 else if (obj.ObjectKind == ObjectKind.EventNpc && !isAetheryteKind)
                 {
-                    // Plain NPC dot fallback (no quest/Mender/Shop icon applied) — sized
-                    // from the same slider as those icons, so the NPCs page's size
-                    // slider controls every NPC marker, dot or icon alike. Excludes
-                    // aetheryte-classified EventNpcs (Firmament crystals) since those
-                    // are routed through the Aetheryte color/size logic instead,
-                    // independent of NPC settings (see MarkerColor above).
-                    float npcSize = config.NpcQuestIconMinSize
-                                  + (config.NpcQuestIconMaxSize - config.NpcQuestIconMinSize) * t;
-                    float npcR    = npcSize * 0.5f;
-
-                    // Hollow ring instead of a filled disc — matches the non-friend
-                    // player marker style below, which reads more clearly against
-                    // busy backgrounds than a solid dot.
-                    dl.AddCircle(V(sx, cy), npcR, WithAlpha(col, alpha), 0, 2.0f);
-                    dl.AddCircle(V(sx, cy), npcR + 0.8f, WithAlpha(0x33000000u, alpha));
+                    // Plain NPC dot, sized from the same slider as the icons above.
+                    // Excludes aetheryte-classified EventNpcs (Firmament crystals),
+                    // which use the Aetheryte color/size path instead.
+                    DrawHollowDot(dl, sx, cy,
+                        Lerp(config.NpcQuestIconMinSize, config.NpcQuestIconMaxSize, t), col, alpha);
                 }
                 else if (obj.ObjectKind == ObjectKind.BattleNpc)
                 {
-                    // Enemy dot, sized from its own page's slider instead of the
-                    // shared global radius — same pattern as Players/NPCs above.
-                    float enemySize = config.EnemyMinSize
-                                     + (config.EnemyMaxSize - config.EnemyMinSize) * t;
-                    float enemyR    = enemySize * 0.5f;
-
-                    dl.AddCircleFilled(V(sx, cy), enemyR, WithAlpha(col, alpha));
-                    dl.AddCircle(V(sx, cy), enemyR + 0.8f, WithAlpha(0x66000000u, alpha));
+                    // Enemy dot, sized from its own page's slider.
+                    DrawFilledDot(dl, sx, cy, Lerp(config.EnemyMinSize, config.EnemyMaxSize, t), col, alpha);
                 }
                 else if (isAetheryteKind)
                 {
-                    // Plain aetheryte dot fallback (icons off, or the texture didn't
-                    // resolve this frame) — sized from the same slider as the real
-                    // icon above, so the Aetherytes page's size slider controls every
-                    // aetheryte marker, dot or icon alike. Catches every ObjectKind
-                    // ClassifyAetheryte can return Big/Shard for (Aetheryte, EventNpc
-                    // Firmament crystals, EventObj housing shards) — not just the
-                    // real ObjectKind.Aetheryte case.
-                    float aetherSize = config.AetheryteIconMinSize
-                                      + (config.AetheryteIconMaxSize - config.AetheryteIconMinSize) * t;
-                    float aetherR    = aetherSize * 0.5f;
-
-                    dl.AddCircleFilled(V(sx, cy), aetherR, WithAlpha(col, alpha));
-                    dl.AddCircle(V(sx, cy), aetherR + 0.8f, WithAlpha(0x66000000u, alpha));
+                    // Plain aetheryte dot (icons off or texture didn't resolve), sized
+                    // from the same slider as the icon. Covers every kind
+                    // ClassifyAetheryte can return Big/Shard for, not just ObjectKind.Aetheryte.
+                    DrawFilledDot(dl, sx, cy,
+                        Lerp(config.AetheryteIconMinSize, config.AetheryteIconMaxSize, t), col, alpha);
+                }
+                else if (obj.ObjectKind == ObjectKind.Treasure)
+                {
+                    // Plain treasure dot, sized from the same slider as the chest icon.
+                    DrawFilledDot(dl, sx, cy,
+                        Lerp(config.TreasureMinSize, config.TreasureMaxSize, t), col, alpha);
                 }
                 else
                 {
-                    dl.AddCircleFilled(V(sx, cy), r, WithAlpha(col, alpha));
-                    dl.AddCircle(V(sx, cy), r + 0.8f, WithAlpha(0x66000000u, alpha));
+                    // Plain dot fallback for Gathering nodes that don't have their own
+                    // size slider yet — next on the list.
+                    DrawFilledDot(dl, sx, cy, r * 2f, col, alpha);
                 }
             }
         }
     }
 
     /// <summary>
-    /// Three-zone distance-fade curve shared by all marker types (regular dots, NPC quest
-    /// icons, and FATEs): fully opaque while closer than <see cref="Configuration.DotNearZone"/>,
-    /// smoothstep down to <see cref="Configuration.DotMidAlpha"/> through the middle band,
-    /// then smoothstep down to fully invisible by <see cref="Configuration.DotFarZone"/>.
-    /// <paramref name="t"/> is 1 at zero distance and 0 at the relevant max range.
+    /// Three-zone distance fade shared by all markers/FATEs: opaque inside DotNearZone,
+    /// smoothstep to DotMidAlpha through the middle band, smoothstep to 0 by DotFarZone.
+    /// t = 1 at zero distance, 0 at max range.
     /// </summary>
     private float ComputeFadeAlpha(float t)
     {
@@ -866,137 +693,48 @@ public sealed class CompassHud : IDisposable
         return midAlpha * ss;
     }
 
-    /// <summary>
-    /// Renders active FATEs as their real game icon (falling back to a plain dot if the
-    /// texture isn't available). Deliberately independent of every other marker toggle —
-    /// see <see cref="Configuration.ShowFates"/>.
-    /// </summary>
-    private void RenderFates(
-        ImDrawListPtr dl,
-        float cx, float cy,
-        float halfVis, float barHalfW, float lensStr,
-        float heading, Vector3 originPos)
-    {
-        if (!config.ShowFates) return;
-
-        float maxDistSq = config.MaxFateDistance * config.MaxFateDistance;
-        float extHalf   = halfVis * lensStr;
-
-        // Same two-pass approach as RenderMarkers: filter first, then sort by distance
-        // so a closer FATE paints on top of a farther one if their icons overlap.
-        fateCandidates.Clear();
-
-        foreach (var fate in fateTable)
-        {
-            if (fate == null) continue;
-            // Only show FATEs that are actually happening or about to happen — an Ending,
-            // Ended, or Failed FATE isn't something worth navigating toward.
-            if (fate.State != FateState.Running && fate.State != FateState.Preparing)
-                continue;
-
-            float dx  = fate.Position.X - originPos.X;
-            float dy  = fate.Position.Y - originPos.Y;
-            float dz  = fate.Position.Z - originPos.Z;
-            float dsq = dx * dx + dy * dy + dz * dz;
-
-            if (dsq > maxDistSq || dsq < 0.25f) continue;
-
-            float bearing = Normalize(MathF.Atan2(dx, -dz) * (180f / MathF.PI));
-            float delta   = Delta(heading, bearing);
-            if (MathF.Abs(delta) > extHalf) continue;
-
-            fateCandidates.Add(new FateCandidate(fate, MathF.Sqrt(dsq), delta));
-        }
-
-        fateCandidates.Sort((a, b) => b.Dist.CompareTo(a.Dist));
-
-        foreach (var candidate in fateCandidates)
-        {
-            var   fate  = candidate.Fate;
-            float delta = candidate.Delta;
-            float dist  = candidate.Dist;
-
-            float sx = cx + Project(delta, halfVis, barHalfW, lensStr);
-
-            float t    = 1f - dist / config.MaxFateDistance;   // 1 = close, 0 = at max range
-            float iconSize = config.FateIconMinSize + (config.FateIconMaxSize - config.FateIconMinSize) * t;
-            // Same edge fade as RenderMarkers — FATEs render exclusively as icons, so
-            // they're exactly the case that used to hard-cut at the bar's edge with no
-            // fade at all.
-            float alpha    = ComputeFadeAlpha(t) * LensEdgeAlpha(delta, halfVis, extHalf);
-
-            bool drewIcon = fate.IconId > 0 && TryDrawIcon(dl, (int)fate.IconId, sx, cy, iconSize, alpha);
-
-            if (!drewIcon)
-            {
-                float r = 3f + 7f * t;
-                dl.AddCircleFilled(V(sx, cy), r, WithAlpha(C(config.FateColor), alpha));
-                dl.AddCircle(V(sx, cy), r + 0.8f, WithAlpha(0x66000000u, alpha));
-            }
-        }
-    }
 
     /// <summary>
-    /// Draws a real game icon (looked up by its game icon ID — works for nameplate
-    /// marker icons, FATE icons, anything ITextureProvider can resolve) centred at the
-    /// given screen position. Returns false (caller should fall back to a plain dot) if
-    /// the texture isn't available this frame.
+    /// Draws a game icon by ID, centred at the given screen position. Returns false
+    /// (fall back to a dot) if the texture isn't resolved yet. <paramref name="uvZoom"/>
+    /// crops into the texture (>1) or zooms out past its edge (&lt;1) while the drawn
+    /// quad stays fixed at <paramref name="size"/> — 1.0 (default) shows the full texture.
     /// </summary>
-    private bool TryDrawIcon(ImDrawListPtr dl, int iconId, float sx, float cy, float size, float alpha, bool clipToCircle = false)
+    private bool TryDrawIcon(ImDrawListPtr dl, int iconId, float sx, float cy, float size, float alpha, bool clipToCircle = false, float uvZoom = 1.0f)
     {
         if (!textureProvider.TryGetFromGameIcon(new GameIconLookup((uint)iconId), out var sharedTex))
             return false;
 
         var tex = sharedTex.GetWrapOrEmpty();
 
-        float half = size * 0.5f;
-        uint  tint = WithAlpha(0xFFFFFFFFu, alpha);
+        float   half   = size * 0.5f;
+        uint    tint   = WithAlpha(0xFFFFFFFFu, alpha);
+        float   uvHalf = 0.5f / Math.Max(0.01f, uvZoom);
+        Vector2 uvMin  = new(0.5f - uvHalf, 0.5f - uvHalf);
+        Vector2 uvMax  = new(0.5f + uvHalf, 0.5f + uvHalf);
 
-        // RenderBar clips everything drawn in this pass to the bar's own rectangle —
-        // fine for plain dots, but icons near the left/right edge of the visible FOV
-        // can have a bounding box wider than the bar (especially with
-        // IconSizeMultiplier/AetheryteIconSizeMultiplier inflating icon sizes), so that
-        // clip was hard-cutting them right at the bar's edge. PushUnclip/PopUnclip
-        // briefly escape that clip just for this one image so it draws in full. This
-        // doesn't change paint order — the end-cap diamonds are drawn afterward in
-        // RenderBar (after its own clip is popped), so they still end up on top of
-        // whatever this paints, clipped or not.
+        // RenderBar clips to the bar rect, which can cut off icons whose bounding box
+        // (inflated by the size multipliers) is wider than the bar near the edges.
+        // Briefly unclip just for this image; paint order is unaffected since the
+        // end-cap diamonds are drawn after RenderBar's own clip is popped anyway.
         PushUnclip(dl);
-        if (clipToCircle)
-        {
-            // Rounding = half the bounding box turns the rectangle into a perfect circle.
-            // Uses ImGui's built-in AddImageRounded — no extra render targets or masks
-            // needed. The rounding is applied before the tint multiply so the circular
-            // edge is anti-aliased by ImGui's own path renderer.
-            dl.AddImageRounded(
-                tex.Handle,
-                V(sx - half, cy - half),
-                V(sx + half, cy + half),
-                Vector2.Zero,
-                Vector2.One,
-                tint,
-                half,
-                ImDrawFlags.RoundCornersAll);
-        }
-        else
-        {
-            dl.AddImage(
-                tex.Handle,
-                V(sx - half, cy - half),
-                V(sx + half, cy + half),
-                Vector2.Zero,
-                Vector2.One,
-                tint);
-        }
+        // rounding=0 draws a plain rect, so one call covers both clipToCircle states.
+        dl.AddImageRounded(
+            tex.Handle,
+            V(sx - half, cy - half),
+            V(sx + half, cy + half),
+            uvMin, uvMax,
+            tint,
+            clipToCircle ? half : 0f,
+            ImDrawFlags.RoundCornersAll);
         PopUnclip(dl);
         return true;
     }
 
     /// <summary>
-    /// Resolves the real Mining/Botany (etc.) icon ID for a gathering node, by chasing
-    /// the chain GatheringPoint(BaseId) → GatheringPointBase → GatheringType → IconMain.
-    /// Cached permanently per BaseId since this is static game data. Returns 0 if any
-    /// link in the chain doesn't resolve.
+    /// Resolves a gathering node's icon via GatheringPoint(BaseId) → GatheringPointBase
+    /// → GatheringType → IconMain. Cached permanently per BaseId. Returns 0 if any link
+    /// in the chain doesn't resolve.
     /// </summary>
     private int GetGatheringIconId(uint baseId)
     {
@@ -1020,14 +758,9 @@ public sealed class CompassHud : IDisposable
         return icon;
     }
 
-    // Role icon IDs confirmed against xivPartyIcons source's "Role" icon set array.
-    // Using ClassJob.Role (not a per-job index) so it works for every current and
-    // future job automatically without needing a lookup table update.
-    /// <summary>
-    /// Returns a filled-dot background color matching the FFXIV UI convention for the
-    /// character's combat role: Tank=blue, Healer=green, DPS=red, DoH/DoL=gray.
-    /// Used as the tinted background behind the unbordered job icon.
-    /// </summary>
+    // Role icon IDs confirmed against xivPartyIcons. Uses ClassJob.Role (not a
+    // per-job index) so it auto-works for every current/future job.
+    /// <summary>Tank=blue, Healer=green, DPS=red, DoH/DoL=gray — matches FFXIV's role UI.</summary>
     private uint GetRoleColor(ICharacter character)
     {
         var row = classJobSheet.GetRowOrDefault(character.ClassJob.RowId);
@@ -1041,12 +774,7 @@ public sealed class CompassHud : IDisposable
         };
     }
 
-    /// <summary>
-    /// Resolves an NPC's title text (e.g. "Merchant &amp; Mender") via the ENpcResident
-    /// sheet, cached permanently per BaseId since this is static game data. Returns ""
-    /// if the NPC has no title or the BaseId doesn't resolve — most named NPCs (over
-    /// 96%, per real sheet data) fall into this category.
-    /// </summary>
+    /// <summary>Resolves an NPC's title via ENpcResident, cached permanently per BaseId. "" if none.</summary>
     private string GetNpcTitle(uint baseId)
     {
         if (npcTitleCache.TryGetValue(baseId, out string? cached))
@@ -1072,13 +800,9 @@ public sealed class CompassHud : IDisposable
     }
 
     /// <summary>
-    /// Checks an NPC's job-keyword match across BOTH possible locations the text can
-    /// live in: the separate ENpcResident "Title" field (e.g. Eilonwy → Name="Eilonwy",
-    /// Title="Merchant &amp; Mender"), or the live display Name itself for NPCs that have
-    /// no personal name at all and are simply named after their role directly
-    /// (e.g. Name="Independent Mender", Title=""). Confirmed via real /compass debug
-    /// output that both patterns genuinely occur — checking Title alone silently missed
-    /// every NPC of the second kind.
+    /// Checks both places job-keyword text can live: the ENpcResident Title field, or
+    /// the live display Name for NPCs with no personal name (e.g. "Independent Mender").
+    /// Both patterns occur in practice — Title alone misses the second kind.
     /// </summary>
     private static bool NpcMatchesKeywords(IGameObject obj, string title, string[] keywords) =>
         TitleContainsAny(title, keywords) || TitleContainsAny(obj.Name.TextValue, keywords);
@@ -1087,25 +811,12 @@ public sealed class CompassHud : IDisposable
     private enum AetheryteNameKind { None, Big, Shard }
 
     /// <summary>
-    /// Classifies an object using a single signal — whether its name contains
-    /// <see cref="Configuration.AethernetShardName"/> ("Aethernet" by default, matched
-    /// as a substring so it catches every city's variant in one go) — interpreted
-    /// differently depending on ObjectKind:
-    ///
-    /// • ObjectKind.Aetheryte objects are aetherytes by definition (the game doesn't
-    ///   use this kind for anything else), so one IS always classified as Big or
-    ///   Shard — Shard if the name matches, Big by default otherwise. No separate
-    ///   "main aetheryte name" check is needed; Big is just the fallback.
-    ///
-    /// • ObjectKind.EventNpc / EventObj cover all sorts of unrelated interactable
-    ///   objects (regular NPCs, housing furnishings, etc.), so a name match there
-    ///   only ever means Shard — there's no safe "default to Big" assumption for
-    ///   these kinds, since that would misclassify ordinary NPCs as aetherytes.
-    ///   A non-match returns None so the caller falls through to whatever else
-    ///   that ObjectKind would normally mean.
-    ///
-    /// Used as the single source of truth for both icon selection and visibility, so
-    /// the two can never drift out of sync with each other.
+    /// Classifies by name match against AethernetShardName ("Aethernet" substring,
+    /// default). ObjectKind.Aetheryte is always Big or Shard (Shard if matched, Big
+    /// otherwise — the game uses this kind for nothing else). EventNpc/EventObj only
+    /// ever return Shard on a match, never Big, since those kinds cover ordinary NPCs/
+    /// furnishings too — a non-match there returns None.
+    /// Single source of truth for both icon selection and visibility.
     /// </summary>
     private AetheryteNameKind ClassifyAetheryte(IGameObject obj)
     {
@@ -1124,14 +835,7 @@ public sealed class CompassHud : IDisposable
             ? config.AethernetShardIconId
             : config.AetheryteIconId;   // Big, or unmatched — default to the Big icon
 
-    /// <summary>
-    /// Checks whether an object matches a known aetheryte pattern (Big or Shard) and, if
-    /// so, returns the colour to draw it with — 0u if hidden by
-    /// <see cref="Configuration.ShowAetherytes"/> or <see cref="Configuration.ShowAethernetShards"/>.
-    /// Returns false if it doesn't match either pattern at all, so the caller (an
-    /// EventNpc/EventObj case) can fall through to whatever other marker category that
-    /// ObjectKind would otherwise represent.
-    /// </summary>
+    /// <summary>Matches an object against the aetheryte pattern; returns the color (0u if hidden by config), or false if no match at all (caller falls through).</summary>
     private bool TryGetAetheryteMarkerColor(IGameObject obj, out uint color)
     {
         var kind = ClassifyAetheryte(obj);
@@ -1160,9 +864,8 @@ public sealed class CompassHud : IDisposable
 
                 if (config.EnemiesOnlyIfEngaged)
                 {
-                    // Note: comparisons use GameObjectId (ulong), not EntityId (uint) —
-                    // those are two distinct ID spaces in this engine, and TargetObjectId
-                    // is expressed in GameObjectId terms.
+                    // GameObjectId (ulong) and EntityId (uint) are distinct ID spaces;
+                    // TargetObjectId is in GameObjectId terms.
                     bool targetingMe    = obj.TargetObjectId == player.GameObjectId;
                     bool iAmTargetingIt = targetManager.Target?.GameObjectId == obj.GameObjectId;
                     if (!targetingMe && !iAmTargetingIt) return 0u;
@@ -1170,10 +873,8 @@ public sealed class CompassHud : IDisposable
 
                 return C(config.EnemyColor);
             case ObjectKind.EventNpc:
-                // Firmament teleport crystals are EventNpcs that share the same
-                // "Aethernet Shard ..." display name pattern as housing-ward shards —
-                // route those through the aetheryte toggles/colour instead of the NPC
-                // one, completely independent of ShowNpcs.
+                // Firmament teleport crystals are EventNpcs sharing the "Aethernet
+                // Shard ..." name pattern — route through aetheryte color, not NPC's.
                 if (TryGetAetheryteMarkerColor(obj, out uint eventNpcAetherCol))
                     return eventNpcAetherCol;
 
@@ -1181,11 +882,8 @@ public sealed class CompassHud : IDisposable
                 if (config.NpcsOnlyIfTargetable && !obj.IsTargetable) return 0u;
                 return C(config.NpcColor);
             case ObjectKind.EventObj:
-                // Confirmed via /compass debug: housing-ward Aethernet shards are
-                // ObjectKind.EventObj (not EventNpc, and not HousingEventObject either
-                // — an earlier guess that didn't pan out). We don't track any other
-                // kind of EventObj on the compass, so this case exists purely for the
-                // aetheryte check; anything that doesn't match falls through to nothing.
+                // Housing-ward Aethernet shards are ObjectKind.EventObj (confirmed via
+                // /compass debug — not EventNpc/HousingEventObject). Only EventObj kind tracked.
                 return TryGetAetheryteMarkerColor(obj, out uint eventObjAetherCol)
                     ? eventObjAetherCol
                     : 0u;
@@ -1196,9 +894,8 @@ public sealed class CompassHud : IDisposable
             case ObjectKind.Treasure:
                 return config.ShowTreasure ? C(config.TreasureColor) : 0u;
             case ObjectKind.Aetheryte:
-                // ClassifyAetheryte always returns Big or Shard (never None) for this
-                // ObjectKind — the kind itself is definitional, so TryGetAetheryteMarkerColor
-                // is guaranteed to return true here; this can never fall through.
+                // ClassifyAetheryte always returns Big or Shard for this kind (never
+                // None), so this call always succeeds.
                 TryGetAetheryteMarkerColor(obj, out uint realAetherCol);
                 return realAetherCol;
             default:
@@ -1222,14 +919,67 @@ public sealed class CompassHud : IDisposable
         return d;
     }
 
+    /// <summary>
+    /// Shared by RenderMarkers/RenderFates: range + FOV filter and bearing/distance calc
+    /// for one target. Full 3D distance (range/size/fade); bearing stays 2D (dx,dz) since
+    /// height shouldn't shove a dot sideways on the compass. Returns false (dist/delta
+    /// undefined) if out of range or outside the visible FOV.
+    /// </summary>
+    private static bool TryComputeBearing(
+        Vector3 targetPos, Vector3 originPos, float heading, float maxDistSq, float extHalf,
+        out float dist, out float delta)
+    {
+        float dx  = targetPos.X - originPos.X;
+        float dy  = targetPos.Y - originPos.Y;
+        float dz  = targetPos.Z - originPos.Z;
+        float dsq = dx * dx + dy * dy + dz * dz;
+
+        dist = 0f; delta = 0f;
+        if (dsq > maxDistSq || dsq < 0.25f) return false;
+
+        float bearing = Normalize(MathF.Atan2(dx, -dz) * (180f / MathF.PI));
+        delta = Delta(heading, bearing);
+        if (MathF.Abs(delta) > extHalf) return false;
+
+        dist = MathF.Sqrt(dsq);
+        return true;
+    }
+
     private static Vector2 V(float x, float y) => new(x, y);
     private static uint     C(Vector4 v)        => ImGui.ColorConvertFloat4ToU32(v);
 
-    /// <summary>
-    /// Returns 1 while |delta| is inside the linear zone, then smoothsteps to 0
-    /// as it moves through the compressed zone toward the edge.
-    /// <paramref name="linearHalf"/> lets labels start fading earlier than ticks.
-    /// </summary>
+    /// <summary>t=1 → max, t=0 → min. Used for every "size at this distance" calc.</summary>
+    private static float Lerp(float min, float max, float t) => min + (max - min) * t;
+
+    /// <summary>Solid disc + soft dark outline — the shared look for every filled marker dot.</summary>
+    private static void DrawFilledDot(ImDrawListPtr dl, float sx, float cy, float size, uint col, float alpha)
+    {
+        float r = size * 0.5f;
+        dl.AddCircleFilled(V(sx, cy), r, WithAlpha(col, alpha));
+        dl.AddCircle(V(sx, cy), r + 0.8f, WithAlpha(0x66000000u, alpha));
+    }
+
+    /// <summary>Open ring + faint outline — the shared look for every hollow marker dot.</summary>
+    private static void DrawHollowDot(ImDrawListPtr dl, float sx, float cy, float size, uint col, float alpha)
+    {
+        float r = size * 0.5f;
+        dl.AddCircle(V(sx, cy), r, WithAlpha(col, alpha), 0, 2.0f);
+        dl.AddCircle(V(sx, cy), r + 0.8f, WithAlpha(0x33000000u, alpha));
+    }
+
+    /// <summary>3 inward-fading circles faking a soft shadow behind an icon (party role icon / player override fill).</summary>
+    private static void DrawInwardShadow(ImDrawListPtr dl, float sx, float cy, float half, uint col, float alpha)
+    {
+        dl.AddCircleFilled(V(sx, cy), half * 0.85f, WithAlpha(col, alpha * 0.6f));
+        dl.AddCircleFilled(V(sx, cy), half * 0.65f, WithAlpha(col, alpha * 0.4f));
+        dl.AddCircleFilled(V(sx, cy), half * 0.45f, WithAlpha(col, alpha * 0.2f));
+    }
+
+    /// <summary>Solid ring just outside an icon's bounding box (party role icon / player override border).</summary>
+    private static void DrawOuterRing(ImDrawListPtr dl, float sx, float cy, float half, uint col, float alpha) =>
+        dl.AddCircle(V(sx, cy), half + 1.0f, WithAlpha(col, alpha), 0, 3.0f);
+
+    /// <summary>1 inside the linear zone, smoothsteps to 0 toward the edge. linearHalf lets labels fade earlier than ticks.</summary>
     private static float LensEdgeAlpha(float delta, float linearHalf, float extHalf)
     {
         float absD = MathF.Abs(delta);
@@ -1248,29 +998,17 @@ public sealed class CompassHud : IDisposable
     }
 
     /// <summary>
-    /// Pushes a clip rect spanning the full display, ignoring whatever clip RenderBar
-    /// currently has active — lets whatever's drawn between this and <see
-    /// cref="PopUnclip"/> render past the bar's edge instead of being hard-cut by
-    /// RenderBar's own clip rect (which is sized to the bar itself). Used by anything
-    /// that needs to match the bar-edge behaviour of a real icon — currently
-    /// TryDrawIcon's image and the party role icon's border/drop-shadow circles, which
-    /// need to escape the same clip together or they visually disagree right at the
-    /// bar's edge (icon rendering in full while its border/shadow gets cut off).
-    /// Named player override borders/fills use the same pattern for the same reason.
+    /// Pushes a full-display clip rect, overriding RenderBar's bar-sized clip, so
+    /// content between this and <see cref="PopUnclip"/> can render past the bar edge.
+    /// Used by TryDrawIcon's image and the role-icon/override border+fill circles,
+    /// which must escape together or visually disagree at the edge.
     /// </summary>
     private static void PushUnclip(ImDrawListPtr dl) =>
         dl.PushClipRect(Vector2.Zero, ImGui.GetIO().DisplaySize, false);
 
     private static void PopUnclip(ImDrawListPtr dl) => dl.PopClipRect();
 
-    /// <summary>
-    /// Logs every object within <paramref name="radius"/> yalms of the player to
-    /// Dalamud's log — real ObjectKind, BaseId, name, targetable state, distance.
-    /// Exists purely as a diagnostic: when a marker category isn't appearing and the
-    /// reason isn't obvious, this turns "guess the ObjectKind" into "read it directly
-    /// off the actual game client" instead. View results with the in-game /xllog
-    /// command, or in the Dalamud console window.
-    /// </summary>
+    /// <summary>Logs every object within radius yalms (ObjectKind, BaseId, name, distance) — diagnostic for "why isn't this showing". View via /xllog.</summary>
     public void DumpNearbyObjects(float radius = 50f)
     {
         var player = objectTable.LocalPlayer;
@@ -1307,9 +1045,7 @@ public sealed class CompassHud : IDisposable
                 bool   isMender     = NpcMatchesKeywords(obj, title, MenderTitleKeywords);
                 bool   isShop       = NpcMatchesKeywords(obj, title, ShopTitleKeywords);
 
-                // Mirrors the exact priority order RenderMarkers uses, so this tells
-                // you definitively which branch would actually win for this object —
-                // no more guessing whether a quest marker is silently taking priority.
+                // Mirrors RenderMarkers' priority order exactly.
                 string winner = hasQuestIcon ? $"QuestMarker(icon={qIconId})"
                               : isMender     ? "Mender"
                               : isShop       ? "Shop"
@@ -1317,6 +1053,14 @@ public sealed class CompassHud : IDisposable
 
                 extra = $" | Title=\"{title}\" | QuestIcon={hasQuestIcon,-5} | " +
                         $"IsMender={isMender,-5} | IsShop={isShop,-5} | WouldShow={winner}";
+            }
+            else if (obj.ObjectKind == ObjectKind.Treasure)
+            {
+                string winner = config.ShowTreasureIcons
+                    ? $"Icon({config.TreasureIconId})"
+                    : "dot";
+
+                extra = $" | WouldShow={winner}";
             }
 
             log.Info(
