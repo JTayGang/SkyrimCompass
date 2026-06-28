@@ -111,12 +111,6 @@ public class Configuration : IPluginConfiguration
     public Vector4 LimitBreakGlowColor2 { get; set; } = new(1.00f, 0.95f, 0.20f, 0.95f);
     /// <summary>Layer 3 (bar 3's own progress) — white by default.</summary>
     public Vector4 LimitBreakGlowColor3 { get; set; } = new(1.00f, 1.00f, 1.00f, 0.95f);
-    /// <summary>
-    /// Small text readout of overall progress toward a full 3-bar break
-    /// (0–100%) — for seeing exactly where you stand instead of just watching
-    /// the glow creep.
-    /// </summary>
-    public bool ShowLimitBreakPercentage { get; set; } = true;
 
     public bool ShowNpcs          { get; set; } = true;
     /// <summary>Hides non-targetable EventNpc "ghost" placeholders (e.g. empty chocobo stable slot).</summary>

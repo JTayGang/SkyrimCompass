@@ -54,7 +54,8 @@ public sealed class Plugin : IDalamudPlugin
 
         commandManager.AddHandler(CommandName, new CommandInfo(OnCommand)
         {
-            HelpMessage = "Toggle the compass. '/compass config' for settings, " +
+            HelpMessage = "Toggle the compass. '/compass on' / '/compass off' to set it " +
+                          "explicitly (handy for macros), '/compass config' for settings, " +
                           "'/compass debug' to log nearby objects (then /xllog to view)."
         });
 
@@ -79,11 +80,22 @@ public sealed class Plugin : IDalamudPlugin
             configWindow.IsOpen = !configWindow.IsOpen;
         else if (trimmed.Equals("debug", StringComparison.OrdinalIgnoreCase))
             compassHud.DumpNearbyObjects();
+        else if (trimmed.Equals("on", StringComparison.OrdinalIgnoreCase))
+            SetEnabled(true);
+        else if (trimmed.Equals("off", StringComparison.OrdinalIgnoreCase))
+            SetEnabled(false);
         else
-        {
-            Config.Enabled = !Config.Enabled;
-            Config.Save(PluginInterface);
-        }
+            SetEnabled(!Config.Enabled);
+    }
+
+    // "on"/"off" are explicit and idempotent — unlike the bare toggle, calling
+    // either one twice in a row (e.g. a macro re-running, or two macros that
+    // each turn the compass off "just in case") leaves it in the same state
+    // both times, rather than flipping it back on by accident.
+    private void SetEnabled(bool enabled)
+    {
+        Config.Enabled = enabled;
+        Config.Save(PluginInterface);
     }
 
     private void OnDraw()

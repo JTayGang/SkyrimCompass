@@ -36,15 +36,6 @@ public sealed class CompassHud : IDisposable
     private readonly IPluginLog log;
     private readonly IFontHandle jupiterFont;
 
-    // TEMPORARY DEBUG AID — lets the Combat tab's "Force LB1/2/3" checkboxes
-    // preview each glow tier without actually charging limit break in a duty.
-    // 0 = off (read the real game state via GetLimitBreakProgress as normal).
-    // Static + public so ConfigWindow can poke it directly without plumbing a
-    // reference through Plugin. Safe to delete this field, the ConfigWindow
-    // checkboxes that set it, and the one ternary in RenderBar that reads it
-    // once the glow visuals are dialed in — nothing else depends on it.
-    public static int DebugForceLimitBreakLevel = 0;
-
     // Limit-break "fade out on use" animation state — persists frame-to-frame
     // (RenderBar has no memory of its own, it's called fresh every frame). On
     // a sudden big drop in real progress (limit break used, which resets the
@@ -296,24 +287,15 @@ public sealed class CompassHud : IDisposable
         float capHW = bh * 0.44f;
         float capHH = bh * 0.64f;
 
-        // Centre notch size — hoisted up here (rather than declared right where
-        // it's drawn in step 10) so the limit-break percentage text in step 3
-        // can stack itself above the notch without the two overlapping.
-        const float nH = 10f, nW = 6f;
-
         // Limit break progress (0.0-3.0, fractional) — used a bit further down,
         // once the border itself has been drawn (so the glow traces over/around
-        // it rather than sitting underneath the whole bar). DebugForceLimitBreakLevel
-        // (see field doc above) takes priority over the real read when set, so
-        // the Combat tab's debug checkboxes can preview a tier on demand.
+        // it rather than sitting underneath the whole bar).
         //
         // UpdateLimitBreakDisplay runs unconditionally — even with the glow
         // toggle off — so its fade-out tracking always reflects real LB usage
         // and resumes seamlessly the moment the toggle is switched back on,
         // rather than the toggle itself ever being mistaken for a "drain".
-        float rawLbProgress = DebugForceLimitBreakLevel > 0
-            ? (float)DebugForceLimitBreakLevel
-            : GetLimitBreakProgress();
+        float rawLbProgress = GetLimitBreakProgress();
         float displayedLbProgress = UpdateLimitBreakDisplay(rawLbProgress, (float)ImGui.GetTime(), out float lbWipeProgress);
         float lbProgress = config.ShowLimitBreakGlow ? displayedLbProgress : 0f;
         if (!config.ShowLimitBreakGlow) lbWipeProgress = 0f;
@@ -415,32 +397,6 @@ public sealed class CompassHud : IDisposable
                 DrawBorderGlowBracket(dl, bx, by, bw, bh, segW3, col3, i3, t3, lbWipeProgress, bar3, fromLeft: true);
                 DrawBorderGlowBracket(dl, bx, by, bw, bh, segW3, col3, i3, t3, lbWipeProgress, bar3, fromLeft: false);
             }
-
-            // Percentage readout, stacked above the centre notch's own space so
-            // the two don't overlap. Overall progress toward the full 3-bar
-            // break (not just the current bar) — a "toward the next bar only"
-            // version would reset to 0% the instant any bar completes (e.g.
-            // 99% -> 0% the moment bar 2 finishes and bar 3 starts charging),
-            // which reads as broken even though it'd be technically correct.
-            // This version only ever climbs. Colored to match the highest
-            // layer currently lit, for the same "tell at a glance" reasoning
-            // as the layering itself. Fades out alongside the ribbons during a
-            // wipe (lbProgress/the number itself stays frozen meanwhile, same
-            // as the geometry, so it doesn't jump to a new number mid-fade).
-            if (config.ShowLimitBreakPercentage)
-            {
-                uint pctCol = bar3 > 0f ? C(config.LimitBreakGlowColor3)
-                            : bar2 > 0f ? C(config.LimitBreakGlowColor2)
-                                        : C(config.LimitBreakGlowColor);
-                float  pct      = lbProgress / 3f * 100f;
-                string pctTxt   = $"{(int)pct}%";
-                var    pctSz    = ImGui.CalcTextSize(pctTxt);
-                float  ptx      = cx - pctSz.X * 0.5f;
-                float  pty      = by - nH - pctSz.Y - 6f;
-                float  textA    = 1f - lbWipeProgress;
-                dl.AddText(V(ptx + 1f, pty + 1f), WithAlpha(0xCC000000u, textA), pctTxt);
-                dl.AddText(V(ptx,      pty),      WithAlpha(pctCol,      textA), pctTxt);
-            }
         }
 
         // ── 4. Clip to bar ────────────────────────────────────────────────────
@@ -535,6 +491,7 @@ public sealed class CompassHud : IDisposable
         DrawEndCapOutlines(dl, bx + bw, cy, capHW, capHH, borderCol);
 
         // ── 10. Centre notch ──────────────────────────────────────────────────
+        const float nH = 10f, nW = 6f;
         dl.AddTriangleFilled(V(cx + 1f, by + nH + 2f), V(cx - nW + 1f, by + 1f), V(cx + nW + 1f, by + 1f), 0x55000000u);
         dl.AddTriangleFilled(V(cx,      by + nH + 1f), V(cx - nW,       by),      V(cx + nW,       by),      0xF2FFFFFFu);
 

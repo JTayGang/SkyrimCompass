@@ -659,41 +659,6 @@ public sealed class ConfigWindow : Window
                 "other, so the three never ripple in lockstep. That's intentional:\n" +
                 "it's meant to look a little overflowing and chaotic at a full break.");
 
-        bool lbPct = cfg.ShowLimitBreakPercentage;
-        if (ImGui.Checkbox("Show percentage##lbpct", ref lbPct))
-        { cfg.ShowLimitBreakPercentage = lbPct; changed = true; }
-        if (ImGui.IsItemHovered())
-            ImGui.SetTooltip(
-                "Small text readout above the bar showing overall progress\n" +
-                "toward a full 3-bar break (0-100%) — for an exact number\n" +
-                "instead of just eyeballing the glow.");
-        ImGui.EndDisabled();
-        ImGui.Unindent();
-
-        // TEMPORARY DEBUG AID — forces CompassHud's glow tier so each level can be
-        // eyeballed without actually charging LB in a duty. Doesn't touch Configuration
-        // (nothing here is saved/persisted), and doesn't route through `changed`, since
-        // there's nothing to write to disk. Safe to delete this whole block — and the
-        // DebugForceLimitBreakLevel field it pokes on CompassHud — once you're happy
-        // with the visuals.
-        ImGui.Indent();
-        ImGui.BeginDisabled(!cfg.ShowLimitBreakGlow);
-        ImGui.TextDisabled("Debug — preview each tier without a real limit break");
-
-        bool dbg1 = CompassHud.DebugForceLimitBreakLevel == 1;
-        if (ImGui.Checkbox("Force LB1##lbdbg1", ref dbg1))
-            CompassHud.DebugForceLimitBreakLevel = dbg1 ? 1 : 0;
-        ImGui.SameLine();
-        bool dbg2 = CompassHud.DebugForceLimitBreakLevel == 2;
-        if (ImGui.Checkbox("Force LB2##lbdbg2", ref dbg2))
-            CompassHud.DebugForceLimitBreakLevel = dbg2 ? 2 : 0;
-        ImGui.SameLine();
-        bool dbg3 = CompassHud.DebugForceLimitBreakLevel == 3;
-        if (ImGui.Checkbox("Force LB3##lbdbg3", ref dbg3))
-            CompassHud.DebugForceLimitBreakLevel = dbg3 ? 3 : 0;
-        if (ImGui.IsItemHovered())
-            ImGui.SetTooltip("Checking one unchecks the others — only one tier can be forced at a time.");
-
         ImGui.EndDisabled();
         ImGui.Unindent();
 
