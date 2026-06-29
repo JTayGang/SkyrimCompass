@@ -9,14 +9,10 @@ public sealed class ConfigWindow : Window
 {
     private readonly Plugin plugin;
 
-    // "Add new player override" form state — not persisted, resets on commit.
-    // A real PlayerIconOverride so the same field-drawing code works for both this
-    // and the existing-entries list below.
+    // "Add new override" form state — not persisted, resets on commit.
     private PlayerIconOverride _newOverride = new();
 
-    // Color-theme combo selection — not persisted (the applied colors themselves
-    // are; this just remembers which dropdown entry is showing). Defaults to
-    // "Original", which is always index 0.
+    // Dropdown selection — not persisted (applied colors themselves are).
     private int _selectedThemeIndex = 0;
 
     public ConfigWindow(Plugin plugin)
@@ -36,7 +32,6 @@ public sealed class ConfigWindow : Window
         var  cfg     = plugin.Config;
         bool changed = false;
 
-        // Top-level enable toggle
         bool enabled = cfg.Enabled;
         if (ImGui.Checkbox("##enabled", ref enabled)) { cfg.Enabled = enabled; changed = true; }
         ImGui.SameLine();
@@ -46,9 +41,9 @@ public sealed class ConfigWindow : Window
         if (ImGui.BeginTabBar("##tabs"))
         {
             changed |= DrawLayoutTab(cfg);
-            changed |= DrawColorsTab(cfg);    // instance method — needs _selectedThemeIndex
+            changed |= DrawColorsTab(cfg);
             changed |= DrawDetectionTab(cfg);
-            changed |= DrawPlayersTab(cfg);   // instance method — needs the _newOverride field
+            changed |= DrawPlayersTab(cfg);
             changed |= DrawCombatTab(cfg);
             changed |= DrawNpcsTab(cfg);
             changed |= DrawGatheringTab(cfg);
@@ -168,7 +163,6 @@ public sealed class ConfigWindow : Window
 
     // ── Colors tab ───────────────────────────────────────────────────────────
 
-    /// <summary>One full compass palette — bar chrome plus every marker category color.</summary>
     private sealed class ColorTheme
     {
         public string  Name          = "";
@@ -186,9 +180,7 @@ public sealed class ConfigWindow : Window
         public Vector4 Fate;
     }
 
-    // "Original" exactly mirrors Configuration's own defaults, so picking it always
-    // gets you back to the plugin's out-of-the-box look. The rest are just fun
-    // palette swaps — add more here any time, the dropdown picks them up automatically.
+    // "Original" mirrors Configuration's defaults exactly — picking it restores the out-of-box look.
     private static readonly ColorTheme[] ColorThemes =
     {
         new ColorTheme
@@ -273,8 +265,6 @@ public sealed class ConfigWindow : Window
         },
     };
 
-    // Derived once from ColorThemes — add a theme above and the dropdown grows
-    // to match without touching this.
     private static readonly string[] ColorThemeNames = Array.ConvertAll(ColorThemes, t => t.Name);
 
     private static void ApplyColorTheme(Configuration cfg, ColorTheme theme)
@@ -293,7 +283,6 @@ public sealed class ConfigWindow : Window
         cfg.FateColor          = theme.Fate;
     }
 
-    // NOT static — needs _selectedThemeIndex.
     private bool DrawColorsTab(Configuration cfg)
     {
         if (!ImGui.BeginTabItem("Colors")) return false;
@@ -345,8 +334,6 @@ public sealed class ConfigWindow : Window
     }
 
     // ── Detection tab ────────────────────────────────────────────────────────
-    // Settings shared across categories: MaxMarkerDistance (object-table loop;
-    // FATEs have their own range) and the fade curve (used everywhere, incl. FATEs).
 
     private static bool DrawDetectionTab(Configuration cfg)
     {
@@ -399,9 +386,8 @@ public sealed class ConfigWindow : Window
     }
 
     // ── Players tab ──────────────────────────────────────────────────────────
-    // NOT static — needs the _newOverride instance field above.
 
-    /// <summary>One editable override row: name, icon ID, border/fill/clip/multiplier. Shared by existing entries and the pending "add new" form.</summary>
+    // Shared by existing override entries and the "add new" form.
     private static bool DrawOverrideRow(PlayerIconOverride ov, string idSuffix, float nameWidth)
     {
         bool changed = false;
@@ -409,11 +395,9 @@ public sealed class ConfigWindow : Window
         string name = ov.PlayerName;
         ImGui.SetNextItemWidth(nameWidth);
         if (ImGui.InputText($"##{idSuffix}name", ref name, 64)) { ov.PlayerName = name; changed = true; }
-        if (ImGui.IsItemHovered())
-            ImGui.SetTooltip("Player display name (exact, case-insensitive)");
+        if (ImGui.IsItemHovered()) ImGui.SetTooltip("Player display name (exact, case-insensitive)");
         ImGui.SameLine();
 
-        // Icon base ID — no step arrows, 5-digit IDs are easier to type directly
         int iconId = ov.IconBaseId;
         ImGui.SetNextItemWidth(68f);
         if (ImGui.InputInt($"##{idSuffix}id", ref iconId, 0, 0)) { ov.IconBaseId = Math.Max(0, iconId); changed = true; }
@@ -421,21 +405,17 @@ public sealed class ConfigWindow : Window
             ImGui.SetTooltip("Game icon base ID\n(e.g. 62007 Paladin, 60453 Aetheryte, 61802 FC emblem)\nBrowse all icons with: /xldata icons");
         ImGui.SameLine();
 
-        // Border checkbox + color swatch
         bool border = ov.ShowBorder;
         if (ImGui.Checkbox($"B##{idSuffix}b", ref border)) { ov.ShowBorder = border; changed = true; }
-        if (ImGui.IsItemHovered())
-            ImGui.SetTooltip("Draw a solid outer ring around the icon");
+        if (ImGui.IsItemHovered()) ImGui.SetTooltip("Draw a solid outer ring around the icon");
         ImGui.SameLine();
         ImGui.BeginDisabled(!ov.ShowBorder);
         Vector4 bc = ov.BorderColor;
         if (ImGui.ColorEdit4($"##{idSuffix}bc", ref bc, ColorPickerFlags)) { ov.BorderColor = bc; changed = true; }
-        if (ImGui.IsItemHovered())
-            ImGui.SetTooltip("Border ring color");
+        if (ImGui.IsItemHovered()) ImGui.SetTooltip("Border ring color");
         ImGui.EndDisabled();
         ImGui.SameLine();
 
-        // Fill checkbox + color swatch
         bool fill = ov.ShowFill;
         if (ImGui.Checkbox($"F##{idSuffix}f", ref fill)) { ov.ShowFill = fill; changed = true; }
         if (ImGui.IsItemHovered())
@@ -444,12 +424,10 @@ public sealed class ConfigWindow : Window
         ImGui.BeginDisabled(!ov.ShowFill);
         Vector4 fc = ov.FillColor;
         if (ImGui.ColorEdit4($"##{idSuffix}fc", ref fc, ColorPickerFlags)) { ov.FillColor = fc; changed = true; }
-        if (ImGui.IsItemHovered())
-            ImGui.SetTooltip("Fill color");
+        if (ImGui.IsItemHovered()) ImGui.SetTooltip("Fill color");
         ImGui.EndDisabled();
         ImGui.SameLine();
 
-        // Circle clip — rounds the icon to match the border ring shape
         bool clip = ov.ClipToCircle;
         if (ImGui.Checkbox($"○##{idSuffix}circ", ref clip)) { ov.ClipToCircle = clip; changed = true; }
         if (ImGui.IsItemHovered())
@@ -459,7 +437,6 @@ public sealed class ConfigWindow : Window
                 "Uses ImGui's built-in rounded image rendering — no extra cost.");
         ImGui.SameLine();
 
-        // Per-icon size multiplier — stacks on top of the global 1.5× compensation
         float mul = ov.SizeMultiplier;
         ImGui.SetNextItemWidth(58f);
         if (ImGui.DragFloat($"##{idSuffix}mul", ref mul, 0.05f, 0.5f, 3.0f, "%.2fx")) { ov.SizeMultiplier = Math.Clamp(mul, 0.5f, 3.0f); changed = true; }
@@ -537,21 +514,18 @@ public sealed class ConfigWindow : Window
         if (cfg.PlayerIconOverrides.Count == 0)
             ImGui.TextDisabled("  (no overrides — add one below)");
 
-        // ── Existing entries (one editable row each) ──────────────────────────
+        // ── Existing entries ──────────────────────────────────────────────────
         int removeAt = -1;
         for (int i = 0; i < cfg.PlayerIconOverrides.Count; i++)
         {
             var ov = cfg.PlayerIconOverrides[i];
             ImGui.PushID(i);
 
-            if (ImGui.Button("X##rmov"))
-                removeAt = i;
-            if (ImGui.IsItemHovered())
-                ImGui.SetTooltip("Remove this override");
+            if (ImGui.Button("X##rmov")) removeAt = i;
+            if (ImGui.IsItemHovered()) ImGui.SetTooltip("Remove this override");
             ImGui.SameLine();
 
             changed |= DrawOverrideRow(ov, "ov", 110f);
-
             ImGui.PopID();
         }
 
@@ -563,7 +537,7 @@ public sealed class ConfigWindow : Window
         ImGui.TextDisabled("Add override:");
         ImGui.SameLine();
 
-        DrawOverrideRow(_newOverride, "newov", 120f);   // mutates the pending entry only — not a config change yet
+        DrawOverrideRow(_newOverride, "newov", 120f);
         ImGui.SameLine();
 
         bool canAdd = !string.IsNullOrWhiteSpace(_newOverride.PlayerName) && _newOverride.IconBaseId > 0;
@@ -572,8 +546,7 @@ public sealed class ConfigWindow : Window
         {
             _newOverride.PlayerName = _newOverride.PlayerName.Trim();
             cfg.PlayerIconOverrides.Add(_newOverride);
-            // Fresh entry for next time — carry over border/fill/clip/multiplier (handy
-            // when adding several overrides with the same look), reset name/icon ID only.
+            // Carry over border/fill/clip/multiplier (handy when adding several with the same look); reset name/icon.
             _newOverride = new PlayerIconOverride
             {
                 ShowBorder     = _newOverride.ShowBorder,
@@ -702,8 +675,8 @@ public sealed class ConfigWindow : Window
         if (ImGui.IsItemHovered())
             ImGui.SetTooltip(
                 "Shows the real game icon for Mender NPCs (gear repair vendors),\n" +
-                "identified by their \"Mender\" job title — confirmed against real\n" +
-                "game data. Shares the size sliders below with every other NPC marker.");
+                "identified by their \"Mender\" job title.\n" +
+                "Shares the size sliders below with every other NPC marker.");
 
         bool sIcon = cfg.ShowShopIcons;
         if (ImGui.Checkbox("Show real Shop/Trader icon##sicon", ref sIcon))
@@ -711,10 +684,8 @@ public sealed class ConfigWindow : Window
         if (ImGui.IsItemHovered())
             ImGui.SetTooltip(
                 "Shows the real game icon for Shop/Trader NPCs, identified by a\n" +
-                "\"Merchant\", \"Vendor\", or \"Trader\" job title — confirmed against\n" +
-                "real game data. Shares the size sliders below with every other NPC marker.\n" +
-                "Note: the exact icon variant used couldn't be visually confirmed\n" +
-                "without a live client — let me know if it doesn't look right.");
+                "\"Merchant\", \"Vendor\", or \"Trader\" job title.\n" +
+                "Shares the size sliders below with every other NPC marker.");
 
         float qMin = cfg.NpcQuestIconMinSize, qMax = cfg.NpcQuestIconMaxSize;
         if (DrawSizeSliders(ref qMin, ref qMax, 50, 60, "q"))
@@ -756,9 +727,7 @@ public sealed class ConfigWindow : Window
         if (ImGui.Checkbox("Show real Mining/Botany icons##gicon", ref gIcon))
         { cfg.ShowGatheringIcons = gIcon; changed = true; }
         if (ImGui.IsItemHovered())
-            ImGui.SetTooltip(
-                "Shows the node's actual Mining/Quarrying/Logging/Botany game icon\n" +
-                "instead of a plain dot.");
+            ImGui.SetTooltip("Shows the node's actual Mining/Quarrying/Logging/Botany game icon instead of a plain dot.");
 
         ImGui.BeginDisabled(!gIcon);
         ImGui.Indent();
@@ -794,7 +763,7 @@ public sealed class ConfigWindow : Window
         if (ImGui.IsItemHovered())
             ImGui.SetTooltip(
                 "Controls the size of EVERY treasure marker — the chest icon below\n" +
-                "AND the plain dot fallback used when none applies.");
+                "AND the plain dot fallback.");
 
         ImGui.Spacing();
 
@@ -805,8 +774,7 @@ public sealed class ConfigWindow : Window
             ImGui.SetTooltip(
                 "Shows a real treasure-chest icon instead of a plain dot. There's no\n" +
                 "game-data sheet that exposes a chest's visual type from its BaseId,\n" +
-                "so every coffer currently shows the same icon (below) rather than\n" +
-                "trying to resolve a per-chest variant.");
+                "so every coffer currently shows the same icon (below).");
 
         ImGui.Indent();
         ImGui.BeginDisabled(!cfg.ShowTreasureIcons);
@@ -818,13 +786,12 @@ public sealed class ConfigWindow : Window
         if (ImGui.IsItemHovered())
             ImGui.SetTooltip(
                 "Game icon ID shown for every treasure coffer — 60354 / 60355 / 60356\n" +
-                "are three known treasure-chest icon variants. Swap in whichever one\n" +
-                "actually looks right once you've seen it in-game.");
+                "are three known treasure-chest icon variants.");
 
-        ImGui.EndDisabled(); // !cfg.ShowTreasureIcons
+        ImGui.EndDisabled();
         ImGui.Unindent();
 
-        ImGui.EndDisabled(); // !cfg.ShowTreasure
+        ImGui.EndDisabled();
         ImGui.Unindent();
 
         ImGui.EndTabItem();
@@ -851,18 +818,15 @@ public sealed class ConfigWindow : Window
             ImGui.SetTooltip(
                 "Aethernet shards are the smaller waypoints found in housing wards,\n" +
                 "the Firmament, and similar areas, as opposed to a city's one main\n" +
-                "aetheryte. Off shows only main aetherytes. Whichever ones are shown\n" +
-                "always use their correct icon (see below) — this only affects\n" +
-                "whether shards appear at all, not which icon they'd use.");
+                "aetheryte. Off shows only main aetherytes.");
 
         bool aIcon = cfg.ShowAetheryteIcons;
         if (ImGui.Checkbox("Show real aetheryte icon##aicon", ref aIcon))
         { cfg.ShowAetheryteIcons = aIcon; changed = true; }
         if (ImGui.IsItemHovered())
             ImGui.SetTooltip(
-                "Icon IDs are confirmed against a reference plugin's icon table.\n" +
-                "Falls back to the colour dot below only if an icon somehow doesn't\n" +
-                "resolve to a loadable texture.");
+                "Icon IDs confirmed against a reference plugin's icon table.\n" +
+                "Falls back to the colour dot only if an icon doesn't resolve.");
 
         float aMin = cfg.AetheryteIconMinSize, aMax = cfg.AetheryteIconMaxSize;
         if (DrawSizeSliders(ref aMin, ref aMax, 50, 60, "a"))
@@ -880,8 +844,8 @@ public sealed class ConfigWindow : Window
                 "A word that appears in every Aethernet shard's name in your game\n" +
                 "language. Matched as a substring, so \"Aethernet\" catches \"Ul'dah\n" +
                 "Aethernet Shard\", \"Limsa Lominsa Aethernet Shard\", etc. all at once.\n" +
-                "Any real aetheryte that DOESN'T match this is assumed to be a city's\n" +
-                "main aetheryte by default — no separate name needed for that.");
+                "Any real aetheryte that DOESN'T match this is assumed to be a main\n" +
+                "aetheryte by default — no separate name needed for that.");
 
         ImGui.EndDisabled();
         ImGui.Unindent();
@@ -906,8 +870,8 @@ public sealed class ConfigWindow : Window
         if (ImGui.IsItemHovered())
             ImGui.SetTooltip(
                 "Shows active or about-to-start FATEs using their real game icon.\n" +
-                "FATEs now sort in the same pass as every other marker, so closer\n" +
-                "items always paint on top. Detection range = Detection tab range\n" +
+                "FATEs sort in the same pass as every other marker so closer items\n" +
+                "always paint on top. Detection range = Detection tab range\n" +
                 "× the multiplier below. Works even with all other markers off.");
 
         ImGui.Indent();
@@ -935,16 +899,12 @@ public sealed class ConfigWindow : Window
         return changed;
     }
 
-    // Compact colour-edit flags: show only the small swatch, not text inputs
+    // Compact colour-edit flags: show only the small swatch, not text inputs.
     private static readonly ImGuiColorEditFlags ColorPickerFlags =
         ImGuiColorEditFlags.NoInputs | ImGuiColorEditFlags.AlphaBar;
 
-    // ── Shared tab building blocks ──────────────────────────────────────────
-    // Every simple marker tab (Enemies/NPCs/Gathering/Treasure/Aetherytes/FATEs/
-    // Players) starts with a "[enable] Label [color]" header and most then have a
-    // min/max size slider pair — these two helpers cover that boilerplate once.
+    // ── Shared tab building blocks ────────────────────────────────────────────
 
-    /// <summary>"[checkbox] label [color swatch]" header row shared by every marker tab.</summary>
     private static bool DrawEnableAndColor(string idPrefix, string label, ref bool enabled, ref Vector4 color)
     {
         bool changed = false;
@@ -954,7 +914,6 @@ public sealed class ConfigWindow : Window
         return changed;
     }
 
-    /// <summary>Min/max size slider pair (far-away / close-up) shared by every marker tab with a size range.</summary>
     private static bool DrawSizeSliders(
         ref float min, ref float max, int minHi, int maxHi, string idPrefix,
         string minLabel = "Min size (far away)", string maxLabel = "Max size (close up)", int lo = 8)
@@ -967,4 +926,3 @@ public sealed class ConfigWindow : Window
         return changed;
     }
 }
-

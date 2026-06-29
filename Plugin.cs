@@ -41,7 +41,7 @@ public sealed class Plugin : IDalamudPlugin
 
         Config = pluginInterface.GetPluginConfig() as Configuration ?? new Configuration();
 
-        // Jupiter is FFXIV's ornate serif font — loaded once, shared with CompassHud.
+        // FFXIV's ornate serif font — loaded once, shared with CompassHud.
         jupiterFontHandle = pluginInterface.UiBuilder.FontAtlas.NewGameFontHandle(
             new GameFontStyle(GameFontFamily.Jupiter, 18));
 
@@ -55,8 +55,8 @@ public sealed class Plugin : IDalamudPlugin
         commandManager.AddHandler(CommandName, new CommandInfo(OnCommand)
         {
             HelpMessage = "Toggle the compass. '/compass on' / '/compass off' to set it " +
-                          "explicitly (handy for macros), '/compass config' for settings, " +
-                          "'/compass debug' to log nearby objects (then /xllog to view)."
+                          "explicitly, '/compass config' for settings, " +
+                          "'/compass debug' to log nearby objects (/xllog to view)."
         });
 
         pluginInterface.UiBuilder.Draw += OnDraw;
@@ -88,10 +88,7 @@ public sealed class Plugin : IDalamudPlugin
             SetEnabled(!Config.Enabled);
     }
 
-    // "on"/"off" are explicit and idempotent — unlike the bare toggle, calling
-    // either one twice in a row (e.g. a macro re-running, or two macros that
-    // each turn the compass off "just in case") leaves it in the same state
-    // both times, rather than flipping it back on by accident.
+    // Idempotent: "on"/"on" twice in a row doesn't flip it back (unlike bare toggle).
     private void SetEnabled(bool enabled)
     {
         Config.Enabled = enabled;
