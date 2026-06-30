@@ -61,6 +61,10 @@ public sealed class CompassHud : IDisposable
     // Obj != null → game object; Fate != null → FATE. T is normalised distance fraction.
     private readonly List<(IGameObject? Obj, IFate? Fate, float Dist, float Delta, float T, uint Col)> allCandidates = new();
 
+    // Static delegate avoids allocating a new Comparison<> object every frame on Sort.
+    private static readonly Comparison<(IGameObject? Obj, IFate? Fate, float Dist, float Delta, float T, uint Col)>
+        DistFarFirst = (a, b) => b.Dist.CompareTo(a.Dist);
+
     // Extra scale for icons with transparent padding (quest/Mender/Shop/job/override icons).
     // NOT applied to Gathering (not undersized) or Aetheryte (has its own multiplier).
     private const float IconSizeMultiplier          = 1.5f;
@@ -150,15 +154,15 @@ public sealed class CompassHud : IDisposable
         var player = objectTable.LocalPlayer;
         if (player == null) return;
 
-        float headingRad;
-        var   originPos = player.Position;   // default: bearings/distances from character
+        float headingRad = 0f;
+        var   originPos  = player.Position;  // default: bearings/distances from character
+        bool  gotHeading = false;
 
         if (config.UseCameraDirection)
         {
-            // DirH increases counter-clockwise (tested in-game) despite docs claiming clockwise — negate to fix.
-            var camManager = CameraManager.Instance();
-            var camera     = camManager != null ? camManager->Camera : null;
-
+            // DirH increases counter-clockwise (tested in-game) — negate to fix.
+            var cm     = CameraManager.Instance();
+            var camera = cm != null ? cm->Camera : null;
             if (camera != null && !float.IsNaN(camera->DirH))
             {
                 headingRad = -camera->DirH;
@@ -173,18 +177,12 @@ public sealed class CompassHud : IDisposable
                     if (!float.IsNaN(camPos.X) && !float.IsNaN(camPos.Y) && !float.IsNaN(camPos.Z))
                         originPos = camPos;
                 }
-            }
-            else if (!float.IsNaN(player.Rotation))
-            {
-                // Camera unavailable (e.g. first frames after zoning) — fall back to facing direction.
-                headingRad = MathF.PI - player.Rotation;
-            }
-            else
-            {
-                return;
+                gotHeading = true;
             }
         }
-        else
+
+        // Fallback: character facing (also covers UseCameraDirection=false or unavailable camera).
+        if (!gotHeading)
         {
             if (float.IsNaN(player.Rotation)) return;
             headingRad = MathF.PI - player.Rotation;  // FFXIV: rotation=0 → south, π → north
@@ -257,8 +255,8 @@ public sealed class CompassHud : IDisposable
         dl.AddRectFilled(V(bx, by), V(bx + bw, by + bh), bgCol);
 
         // Warm centre glow
-        uint warmGlow = ImGui.ColorConvertFloat4ToU32(new Vector4(0.9f, 0.70f, 0.35f, 0.08f));
-        float gw = bw * 0.22f;
+        uint  warmGlow = ImGui.ColorConvertFloat4ToU32(new Vector4(0.9f, 0.70f, 0.35f, 0.08f));
+        float gw       = bw * 0.22f;
         dl.AddRectFilledMultiColor(V(cx - gw, by), V(cx,      by + bh), 0u,       warmGlow, warmGlow, 0u);
         dl.AddRectFilledMultiColor(V(cx,      by), V(cx + gw, by + bh), warmGlow, 0u,       0u,       warmGlow);
 
@@ -278,32 +276,28 @@ public sealed class CompassHud : IDisposable
         if (lbProgress > 0f)
         {
             float glowT = (float)ImGui.GetTime();
-            float bar1  = MathF.Min(lbProgress, 1f);
-            float bar2  = Math.Clamp(lbProgress - 1f, 0f, 1f);
-            float bar3  = Math.Clamp(lbProgress - 2f, 0f, 1f);
+            float bar1  = Math.Clamp(lbProgress,       0f, 1f);
+            float bar2  = Math.Clamp(lbProgress - 1f,  0f, 1f);
+            float bar3  = Math.Clamp(lbProgress - 2f,  0f, 1f);
 
             static float Intensity(float tt) =>
                 (0.75f + 0.25f * MathF.Sin(tt * 0.79f)) * (0.92f + 0.08f * MathF.Sin(tt * 3.23f + 1.17f));
 
-            if (bar1 > 0f)
+            (float bar, float tMul, float tOff, Vector4 color)[] lbLayers =
             {
-                float t1 = glowT; float segW1 = bw * 0.5f * bar1; uint col1 = C(config.LimitBreakGlowColor); float i1 = Intensity(t1);
-                DrawBorderGlowBracket(dl, bx, by, bw, bh, segW1, col1, i1, t1, lbWipeProgress, bar1, fromLeft: true);
-                DrawBorderGlowBracket(dl, bx, by, bw, bh, segW1, col1, i1, t1, lbWipeProgress, bar1, fromLeft: false);
-            }
-            if (bar2 > 0f)
+                (bar1, 1.00f, 0.0f, config.LimitBreakGlowColor),
+                (bar2, 1.60f, 3.7f, config.LimitBreakGlowColor2),
+                (bar3, 0.65f, 7.1f, config.LimitBreakGlowColor3),
+            };
+            foreach (var (bar, tMul, tOff, lbColor) in lbLayers)
             {
-                // 1.6× speed + 3.7 phase offset — visibly out of sync with layer 1.
-                float t2 = glowT * 1.6f + 3.7f; float segW2 = bw * 0.5f * bar2; uint col2 = C(config.LimitBreakGlowColor2); float i2 = Intensity(t2);
-                DrawBorderGlowBracket(dl, bx, by, bw, bh, segW2, col2, i2, t2, lbWipeProgress, bar2, fromLeft: true);
-                DrawBorderGlowBracket(dl, bx, by, bw, bh, segW2, col2, i2, t2, lbWipeProgress, bar2, fromLeft: false);
-            }
-            if (bar3 > 0f)
-            {
-                // 0.65× speed + 7.1 phase offset — slower, further detuned for chaotic full-break feel.
-                float t3 = glowT * 0.65f + 7.1f; float segW3 = bw * 0.5f * bar3; uint col3 = C(config.LimitBreakGlowColor3); float i3 = Intensity(t3);
-                DrawBorderGlowBracket(dl, bx, by, bw, bh, segW3, col3, i3, t3, lbWipeProgress, bar3, fromLeft: true);
-                DrawBorderGlowBracket(dl, bx, by, bw, bh, segW3, col3, i3, t3, lbWipeProgress, bar3, fromLeft: false);
+                if (bar <= 0f) continue;
+                float t    = glowT * tMul + tOff;
+                float segW = bw * 0.5f * bar;
+                uint  col  = C(lbColor);
+                float i    = Intensity(t);
+                DrawBorderGlowBracket(dl, bx, by, bw, bh, segW, col, i, t, lbWipeProgress, bar, fromLeft: true);
+                DrawBorderGlowBracket(dl, bx, by, bw, bh, segW, col, i, t, lbWipeProgress, bar, fromLeft: false);
             }
         }
 
@@ -372,7 +366,7 @@ public sealed class CompassHud : IDisposable
         dl.PopClipRect();
 
         // ── 8. End-cap fills — opaque so they mask ticks/dots at the edges ────
-        dl.AddQuadFilled(V(bx,      cy - capHH), V(bx + capHW,     cy), V(bx,      cy + capHH), V(bx - capHW,     cy), solidBgCol);
+        dl.AddQuadFilled(V(bx,      cy - capHH), V(bx + capHW,      cy), V(bx,      cy + capHH), V(bx - capHW,      cy), solidBgCol);
         dl.AddQuadFilled(V(bx + bw, cy - capHH), V(bx + bw + capHW, cy), V(bx + bw, cy + capHH), V(bx + bw - capHW, cy), solidBgCol);
 
         // ── 9. End-cap outlines ───────────────────────────────────────────────
@@ -425,22 +419,22 @@ public sealed class CompassHud : IDisposable
         Vector2 dir  = delta / len;
         Vector2 perp = new(-dir.Y, dir.X);
 
-        const float amplitude        = 4.0f;
-        const float waveLenLong      = 130f;
-        const float waveLenShort     = 22f;
-        const float flowSpeed        = 2.0f;
+        const float amplitude         = 4.0f;
+        const float waveLenLong       = 130f;
+        const float waveLenShort      = 22f;
+        const float flowSpeed         = 2.0f;
         const float wipeBandHalfWidth = 0.18f;
 
-        static float SmoothStep(float x) => x * x * (3f - 2f * x);
-
         // Fade zone closes to 0 width (fully opaque) as bar reaches 1.0 — solid "ready" cue.
-        float tipFadeStart  = Lerp(0.6f, 1.0f, Math.Clamp(fillProgress, 0f, 1f));
-        float flowDir       = fromLeft ? -1f : 1f;
+        float tipFadeStart   = Lerp(0.6f, 1.0f, Math.Clamp(fillProgress, 0f, 1f));
+        float flowDir        = fromLeft ? -1f : 1f;
         float wipeBandCentre = Lerp(1f + wipeBandHalfWidth, -wipeBandHalfWidth, wipeProgress);
 
         int samples = Math.Clamp((int)(len / waveLenShort * 4f) + 2, 3, 96);
-        var pts     = new Vector2[samples];
-        var fades   = new float[samples];
+
+        // stackalloc avoids per-call heap allocation (called up to 6× per frame).
+        Span<Vector2> pts   = stackalloc Vector2[96];
+        Span<float>   fades = stackalloc float[96];
 
         float phase = 0f, prevAlong = 0f;
         for (int i = 0; i < samples; i++)
@@ -448,25 +442,22 @@ public sealed class CompassHud : IDisposable
             float along = len * i / (samples - 1);
             float u     = fromLeft ? along / len : 1f - along / len;
 
-            // Integrate frequency step-by-step (not flat) so phase stays continuous as freq shortens.
+            // Integrate frequency step-by-step so phase stays continuous as freq shortens.
             float freq = Lerp(2f * MathF.PI / waveLenLong, 2f * MathF.PI / waveLenShort, u);
             phase     += freq * (along - prevAlong);
             prevAlong  = along;
 
             float envelope  = u * u * (3f - 2f * u);
             float timePhase = t * flowSpeed * flowDir;
-            float wave1     = MathF.Sin(phase + timePhase);
-            float wave2     = MathF.Sin(phase * 2.6f + timePhase * 1.5f + 1.3f);
-            float wave      = wave1 * (1f - 0.5f * u) + wave2 * (0.5f * u);
+            float wave      = MathF.Sin(phase + timePhase) * (1f - 0.5f * u)
+                            + MathF.Sin(phase * 2.6f + timePhase * 1.5f + 1.3f) * (0.5f * u);
 
             pts[i] = a + dir * along + perp * (amplitude * envelope * wave);
 
-            float fadeT   = u <= tipFadeStart ? 0f : Math.Clamp((u - tipFadeStart) / (1f - tipFadeStart + 1e-4f), 0f, 1f);
-            float tipFade = 1f - SmoothStep(fadeT);
-
-            float wipeX   = Math.Clamp((u - (wipeBandCentre - wipeBandHalfWidth)) / (2f * wipeBandHalfWidth), 0f, 1f);
-            float wipeFade = 1f - SmoothStep(wipeX);
-
+            float tipFade  = 1f - SmoothStep(u <= tipFadeStart ? 0f
+                               : Math.Clamp((u - tipFadeStart) / (1f - tipFadeStart + 1e-4f), 0f, 1f));
+            float wipeFade = 1f - SmoothStep(Math.Clamp(
+                               (u - (wipeBandCentre - wipeBandHalfWidth)) / (2f * wipeBandHalfWidth), 0f, 1f));
             fades[i] = tipFade * wipeFade;
         }
 
@@ -507,11 +498,8 @@ public sealed class CompassHud : IDisposable
     {
         var uiState = UIState.Instance();
         if (uiState == null) return 0f;
-
         var lb = uiState->LimitBreakController;
-        if (lb.BarUnits <= 0) return 0f;
-
-        return Math.Clamp((float)lb.CurrentUnits / lb.BarUnits, 0f, 3f);
+        return lb.BarUnits <= 0 ? 0f : Math.Clamp((float)lb.CurrentUnits / lb.BarUnits, 0f, 3f);
     }
 
     // Feeds raw LB progress through fade-out logic. On a sudden big drop (gauge reset),
@@ -534,25 +522,15 @@ public sealed class CompassHud : IDisposable
 
         if (lbFadeOutStartTime >= 0f)
         {
-            // Progress climbed back above the frozen snapshot (e.g. LB re-charging mid-wipe) — resync.
-            if (realProgress > lbFrozenProgress)
-            {
-                lbFadeOutStartTime = -1f;
-                lbTrackedProgress  = realProgress;
-                wipeProgress = 0f;
-                return lbTrackedProgress;
-            }
-
             float elapsed = now - lbFadeOutStartTime;
-            if (elapsed >= LbFadeOutDuration)
+            // Resync if progress climbed back above the frozen snapshot, or wipe has finished.
+            if (realProgress > lbFrozenProgress || elapsed >= LbFadeOutDuration)
             {
-                // Wipe finished — everything hidden, so snapping tracked value is invisible.
                 lbFadeOutStartTime = -1f;
                 lbTrackedProgress  = realProgress;
-                wipeProgress = 0f;
+                wipeProgress       = 0f;
                 return lbTrackedProgress;
             }
-
             wipeProgress = elapsed / LbFadeOutDuration;
             return lbFrozenProgress;
         }
@@ -605,7 +583,7 @@ public sealed class CompassHud : IDisposable
 
         if (allCandidates.Count == 0) return;
 
-        allCandidates.Sort((a, b) => b.Dist.CompareTo(a.Dist));
+        allCandidates.Sort(DistFarFirst);
 
         foreach (var candidate in allCandidates)
         {
@@ -690,9 +668,7 @@ public sealed class CompassHud : IDisposable
                     if (config.ShowPartyRoleIcons && obj is ICharacter partyChar
                         && (partyChar.StatusFlags & StatusFlags.PartyMember) != 0)
                     {
-                        uint jobRowId  = partyChar.ClassJob.RowId;
-                        int  jobIconId = jobRowId > 0 ? (int)(62000 + jobRowId) : 0;
-
+                        int jobIconId = partyChar.ClassJob.RowId > 0 ? (int)(62000 + partyChar.ClassJob.RowId) : 0;
                         if (jobIconId > 0)
                         {
                             float iconDrawSize = playerSize * IconSizeMultiplier;
@@ -796,17 +772,9 @@ public sealed class CompassHud : IDisposable
         float midAlpha = config.DotMidAlpha;
 
         if (t >= nearZone) return 1f;
-
         if (t >= midEnd)
-        {
-            float u  = (t - midEnd) / (nearZone - midEnd);
-            float sm = u * u * (3f - 2f * u);
-            return midAlpha + (1f - midAlpha) * sm;
-        }
-
-        float uu = t / midEnd;
-        float ss = uu * uu * (3f - 2f * uu);
-        return midAlpha * ss;
+            return midAlpha + (1f - midAlpha) * SmoothStep((t - midEnd) / (nearZone - midEnd));
+        return midAlpha * SmoothStep(t / midEnd);
     }
 
     // Draws a game icon centred at (sx, cy). Returns false if texture not yet loaded.
@@ -819,7 +787,7 @@ public sealed class CompassHud : IDisposable
         if (!textureProvider.TryGetFromGameIcon(new GameIconLookup((uint)iconId), out var sharedTex))
             return false;
 
-        var tex  = sharedTex.GetWrapOrEmpty();
+        var  tex  = sharedTex.GetWrapOrEmpty();
         uint tint = WithAlpha(0xFFFFFFFFu, alpha);
 
         float   half;
@@ -827,8 +795,8 @@ public sealed class CompassHud : IDisposable
 
         if (clipToCircle)
         {
-            half          = size * 0.5f;
-            float uvHalf  = 0.5f / Math.Max(0.01f, uvZoom);
+            half         = size * 0.5f;
+            float uvHalf = 0.5f / Math.Max(0.01f, uvZoom);
             uvMin = new(0.5f - uvHalf, 0.5f - uvHalf);
             uvMax = new(0.5f + uvHalf, 0.5f + uvHalf);
         }
@@ -858,29 +826,21 @@ public sealed class CompassHud : IDisposable
         if (gatheringIconCache.TryGetValue(baseId, out int cached)) return cached;
 
         int icon = 0;
-        var gpRow = gatheringPointSheet.GetRowOrDefault(baseId);
-        if (gpRow != null)
-        {
-            var gpBaseRow = gatheringPointBaseSheet.GetRowOrDefault(gpRow.Value.GatheringPointBase.RowId);
-            if (gpBaseRow != null)
-            {
-                var typeRow = gatheringTypeSheet.GetRowOrDefault(gpBaseRow.Value.GatheringType.RowId);
-                if (typeRow != null)
-                    icon = typeRow.Value.IconMain;
-            }
-        }
+        if (gatheringPointSheet.GetRowOrDefault(baseId) is { } gp
+            && gatheringPointBaseSheet.GetRowOrDefault(gp.GatheringPointBase.RowId) is { } gpb
+            && gatheringTypeSheet.GetRowOrDefault(gpb.GatheringType.RowId) is { } gt)
+            icon = gt.IconMain;
 
-        gatheringIconCache[baseId] = icon;
-        return icon;
+        return gatheringIconCache[baseId] = icon;
     }
 
     // Uses ClassJob.Role (not a per-job index) so future jobs work automatically.
     // Tank=blue, Healer=green, DPS=red, DoH/DoL=gray — matches FFXIV's role UI.
     private uint GetRoleColor(ICharacter character)
     {
-        var row = classJobSheet.GetRowOrDefault(character.ClassJob.RowId);
-        if (row == null) return C(new Vector4(0.54f, 0.54f, 0.54f, 0.85f));
-        return row.Value.Role switch
+        if (classJobSheet.GetRowOrDefault(character.ClassJob.RowId) is not { } row)
+            return C(new Vector4(0.54f, 0.54f, 0.54f, 0.85f));
+        return row.Role switch
         {
             1      => C(new Vector4(0.36f, 0.48f, 0.76f, 0.90f)),   // Tank — blue
             2 or 3 => C(new Vector4(0.84f, 0.30f, 0.30f, 0.90f)),   // DPS  — red
@@ -893,14 +853,8 @@ public sealed class CompassHud : IDisposable
     private string GetNpcTitle(uint baseId)
     {
         if (npcTitleCache.TryGetValue(baseId, out string? cached)) return cached;
-
-        string title = "";
-        var row = npcResidentSheet.GetRowOrDefault(baseId);
-        if (row != null)
-            title = row.Value.Title.ToString();
-
-        npcTitleCache[baseId] = title;
-        return title;
+        string title = npcResidentSheet.GetRowOrDefault(baseId) is { } row ? row.Title.ToString() : "";
+        return npcTitleCache[baseId] = title;
     }
 
     private static bool TitleContainsAny(string title, string[] keywords)
@@ -942,7 +896,6 @@ public sealed class CompassHud : IDisposable
     {
         var kind = ClassifyAetheryte(obj);
         if (kind == AetheryteNameKind.None) { color = 0u; return false; }
-
         bool hidden = !config.ShowAetherytes
             || (kind == AetheryteNameKind.Shard && !config.ShowAethernetShards);
         color = hidden ? 0u : C(config.AetheryteColor);
@@ -959,13 +912,11 @@ public sealed class CompassHud : IDisposable
             case ObjectKind.BattleNpc:
                 if (!config.ShowEnemies) return 0u;
                 if (obj is not IBattleNpc bnpc || bnpc.BattleNpcKind != BattleNpcSubKind.Combatant) return 0u;
-                if (config.EnemiesOnlyIfEngaged)
-                {
-                    // GameObjectId (ulong) and EntityId (uint) are distinct ID spaces; TargetObjectId is ulong.
-                    bool targetingMe    = obj.TargetObjectId == player.GameObjectId;
-                    bool iAmTargetingIt = targetManager.Target?.GameObjectId == obj.GameObjectId;
-                    if (!targetingMe && !iAmTargetingIt) return 0u;
-                }
+                // GameObjectId (ulong) and EntityId (uint) are distinct ID spaces; TargetObjectId is ulong.
+                if (config.EnemiesOnlyIfEngaged
+                    && obj.TargetObjectId != player.GameObjectId
+                    && targetManager.Target?.GameObjectId != obj.GameObjectId)
+                    return 0u;
                 return C(config.EnemyColor);
 
             case ObjectKind.EventNpc:
@@ -978,8 +929,7 @@ public sealed class CompassHud : IDisposable
             case ObjectKind.EventObj:
                 // Housing-ward Aethernet shards are EventObj (not EventNpc).
                 return TryGetAetheryteMarkerColor(obj, out uint eventObjAetherCol)
-                    ? eventObjAetherCol
-                    : 0u;
+                    ? eventObjAetherCol : 0u;
 
             case ObjectKind.GatheringPoint:
                 if (!config.ShowGatheringNodes) return 0u;
@@ -999,6 +949,8 @@ public sealed class CompassHud : IDisposable
     }
 
     // ── Helpers ───────────────────────────────────────────────────────────────
+
+    private static float SmoothStep(float x) => x * x * (3f - 2f * x);
 
     private static float Normalize(float a)
     {
@@ -1045,15 +997,15 @@ public sealed class CompassHud : IDisposable
     private static void DrawFilledDot(ImDrawListPtr dl, float sx, float cy, float size, uint col, float alpha)
     {
         float r = size * 0.5f;
-        dl.AddCircleFilled(V(sx, cy), r,         WithAlpha(col,        alpha));
-        dl.AddCircle(      V(sx, cy), r + 0.8f,  WithAlpha(0x66000000u, alpha));
+        dl.AddCircleFilled(V(sx, cy), r,        WithAlpha(col,        alpha));
+        dl.AddCircle(      V(sx, cy), r + 0.8f, WithAlpha(0x66000000u, alpha));
     }
 
     private static void DrawHollowDot(ImDrawListPtr dl, float sx, float cy, float size, uint col, float alpha)
     {
         float r = size * 0.5f;
-        dl.AddCircle(V(sx, cy), r,         WithAlpha(col,        alpha), 0, 2.0f);
-        dl.AddCircle(V(sx, cy), r + 0.8f,  WithAlpha(0x33000000u, alpha));
+        dl.AddCircle(V(sx, cy), r,        WithAlpha(col,        alpha), 0, 2.0f);
+        dl.AddCircle(V(sx, cy), r + 0.8f, WithAlpha(0x33000000u, alpha));
     }
 
     // 3 inward-fading circles faking a soft shadow behind an icon (role icon / override fill).
@@ -1073,14 +1025,12 @@ public sealed class CompassHud : IDisposable
     {
         float absD = MathF.Abs(delta);
         if (absD <= linearHalf) return 1f;
-        float t = MathF.Min(1f, (absD - linearHalf) / (extHalf - linearHalf));
-        return 1f - t * t * (3f - 2f * t);
+        return 1f - SmoothStep(MathF.Min(1f, (absD - linearHalf) / (extHalf - linearHalf)));
     }
 
     private static uint WithAlpha(uint color, float mul)
     {
-        uint origA = (color >> 24) & 0xFFu;
-        uint newA  = (uint)(origA * MathF.Min(1f, MathF.Max(0f, mul)));
+        uint newA = (uint)(((color >> 24) & 0xFFu) * Math.Clamp(mul, 0f, 1f));
         return (color & 0x00FFFFFFu) | (newA << 24);
     }
 

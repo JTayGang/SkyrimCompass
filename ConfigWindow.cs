@@ -67,9 +67,7 @@ public sealed class ConfigWindow : Window
     {
         if (!ImGui.BeginTabItem("Layout")) return false;
         bool changed = false;
-
-        float v;
-        int   iv;
+        float v; int iv;
 
         iv = (int)cfg.CompassWidth;
         if (ImGui.SliderInt("Width##w", ref iv, 200, 1400))
@@ -166,18 +164,8 @@ public sealed class ConfigWindow : Window
     private sealed class ColorTheme
     {
         public string  Name          = "";
-        public Vector4 Background;
-        public Vector4 Border;
-        public Vector4 Cardinal;
-        public Vector4 Intercardinal;
-        public Vector4 Tick;
-        public Vector4 Player;
-        public Vector4 Enemy;
-        public Vector4 Npc;
-        public Vector4 Gathering;
-        public Vector4 Treasure;
-        public Vector4 Aetheryte;
-        public Vector4 Fate;
+        public Vector4 Background, Border, Cardinal, Intercardinal, Tick;
+        public Vector4 Player, Enemy, Npc, Gathering, Treasure, Aetheryte, Fate;
     }
 
     // "Original" mirrors Configuration's defaults exactly — picking it restores the out-of-box look.
@@ -267,47 +255,38 @@ public sealed class ConfigWindow : Window
 
     private static readonly string[] ColorThemeNames = Array.ConvertAll(ColorThemes, t => t.Name);
 
-    private static void ApplyColorTheme(Configuration cfg, ColorTheme theme)
+    private static void ApplyColorTheme(Configuration cfg, ColorTheme t)
     {
-        cfg.BackgroundColor    = theme.Background;
-        cfg.BorderColor        = theme.Border;
-        cfg.CardinalColor      = theme.Cardinal;
-        cfg.IntercardinalColor = theme.Intercardinal;
-        cfg.TickColor          = theme.Tick;
-        cfg.PlayerColor        = theme.Player;
-        cfg.EnemyColor         = theme.Enemy;
-        cfg.NpcColor           = theme.Npc;
-        cfg.GatheringColor     = theme.Gathering;
-        cfg.TreasureColor      = theme.Treasure;
-        cfg.AetheryteColor     = theme.Aetheryte;
-        cfg.FateColor          = theme.Fate;
+        cfg.BackgroundColor    = t.Background;
+        cfg.BorderColor        = t.Border;
+        cfg.CardinalColor      = t.Cardinal;
+        cfg.IntercardinalColor = t.Intercardinal;
+        cfg.TickColor          = t.Tick;
+        cfg.PlayerColor        = t.Player;
+        cfg.EnemyColor         = t.Enemy;
+        cfg.NpcColor           = t.Npc;
+        cfg.GatheringColor     = t.Gathering;
+        cfg.TreasureColor      = t.Treasure;
+        cfg.AetheryteColor     = t.Aetheryte;
+        cfg.FateColor          = t.Fate;
     }
 
     private bool DrawColorsTab(Configuration cfg)
     {
         if (!ImGui.BeginTabItem("Colors")) return false;
-        bool    changed = false;
-        Vector4 c;
+        bool changed = false;
 
-        c = cfg.BackgroundColor;
-        if (ImGui.ColorEdit4("Background##bgc", ref c))
-        { cfg.BackgroundColor = c; changed = true; }
+        // Local helper avoids 5× repeated temp-variable pattern (properties can't be passed by ref).
+        void CE(string label, Vector4 val, Action<Vector4> set)
+        {
+            if (ImGui.ColorEdit4(label, ref val)) { set(val); changed = true; }
+        }
 
-        c = cfg.BorderColor;
-        if (ImGui.ColorEdit4("Border##bdc", ref c))
-        { cfg.BorderColor = c; changed = true; }
-
-        c = cfg.CardinalColor;
-        if (ImGui.ColorEdit4("Cardinal labels  (N / S / E / W)##cdc", ref c))
-        { cfg.CardinalColor = c; changed = true; }
-
-        c = cfg.IntercardinalColor;
-        if (ImGui.ColorEdit4("Intercardinal labels  (NE / SW …)##icc", ref c))
-        { cfg.IntercardinalColor = c; changed = true; }
-
-        c = cfg.TickColor;
-        if (ImGui.ColorEdit4("Tick marks##tkc", ref c))
-        { cfg.TickColor = c; changed = true; }
+        CE("Background##bgc",                        cfg.BackgroundColor,    v => cfg.BackgroundColor    = v);
+        CE("Border##bdc",                             cfg.BorderColor,        v => cfg.BorderColor        = v);
+        CE("Cardinal labels  (N / S / E / W)##cdc",  cfg.CardinalColor,      v => cfg.CardinalColor      = v);
+        CE("Intercardinal labels  (NE / SW …)##icc", cfg.IntercardinalColor, v => cfg.IntercardinalColor = v);
+        CE("Tick marks##tkc",                        cfg.TickColor,          v => cfg.TickColor          = v);
 
         ImGui.Spacing();
         ImGui.Separator();
@@ -387,7 +366,8 @@ public sealed class ConfigWindow : Window
 
     // ── Players tab ──────────────────────────────────────────────────────────
 
-    // Shared by existing override entries and the "add new" form.
+    // One editable override row: name, icon ID, border/fill/clip/multiplier.
+    // Shared by existing entries and the pending "add new" form.
     private static bool DrawOverrideRow(PlayerIconOverride ov, string idSuffix, float nameWidth)
     {
         bool changed = false;
@@ -439,7 +419,8 @@ public sealed class ConfigWindow : Window
 
         float mul = ov.SizeMultiplier;
         ImGui.SetNextItemWidth(58f);
-        if (ImGui.DragFloat($"##{idSuffix}mul", ref mul, 0.05f, 0.5f, 3.0f, "%.2fx")) { ov.SizeMultiplier = Math.Clamp(mul, 0.5f, 3.0f); changed = true; }
+        if (ImGui.DragFloat($"##{idSuffix}mul", ref mul, 0.05f, 0.5f, 3.0f, "%.2fx"))
+        { ov.SizeMultiplier = Math.Clamp(mul, 0.5f, 3.0f); changed = true; }
         if (ImGui.IsItemHovered())
             ImGui.SetTooltip(
                 "Per-icon size multiplier (stacks on top of the global 1.5× padding compensation).\n" +
@@ -514,18 +495,14 @@ public sealed class ConfigWindow : Window
         if (cfg.PlayerIconOverrides.Count == 0)
             ImGui.TextDisabled("  (no overrides — add one below)");
 
-        // ── Existing entries ──────────────────────────────────────────────────
         int removeAt = -1;
         for (int i = 0; i < cfg.PlayerIconOverrides.Count; i++)
         {
-            var ov = cfg.PlayerIconOverrides[i];
             ImGui.PushID(i);
-
             if (ImGui.Button("X##rmov")) removeAt = i;
             if (ImGui.IsItemHovered()) ImGui.SetTooltip("Remove this override");
             ImGui.SameLine();
-
-            changed |= DrawOverrideRow(ov, "ov", 110f);
+            changed |= DrawOverrideRow(cfg.PlayerIconOverrides[i], "ov", 110f);
             ImGui.PopID();
         }
 
@@ -546,7 +523,7 @@ public sealed class ConfigWindow : Window
         {
             _newOverride.PlayerName = _newOverride.PlayerName.Trim();
             cfg.PlayerIconOverrides.Add(_newOverride);
-            // Carry over border/fill/clip/multiplier (handy when adding several with the same look); reset name/icon.
+            // Carry over border/fill/clip/multiplier; reset name/icon for the next entry.
             _newOverride = new PlayerIconOverride
             {
                 ShowBorder     = _newOverride.ShowBorder,
