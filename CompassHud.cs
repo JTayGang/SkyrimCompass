@@ -1,6 +1,8 @@
 using System;
 using System.Collections.Generic;
 using System.Numerics;
+using System.Reflection;
+using Dalamud.Game;
 using Dalamud.Game.ClientState.Conditions;
 using Dalamud.Game.ClientState.Fates;
 using Dalamud.Game.ClientState.Objects.Enums;
@@ -50,12 +52,28 @@ public sealed class CompassHud : IDisposable
     private readonly ExcelSheet<GatheringPointBase> gatheringPointBaseSheet;
     private readonly ExcelSheet<GatheringType>      gatheringTypeSheet;
 
-    // BaseId → NPC title text, cached permanently.
+    // BaseId → NPC title text (always English, see npcResidentSheet below), cached permanently.
     private readonly Dictionary<uint, string> npcTitleCache = new();
+    // BaseId → NPC "Singular" text (always English), cached permanently. Confirmed via
+    // /compass debug: named NPCs (e.g. "Alistair") carry their vocation in Title and their
+    // personal name in Singular, but generic flavor NPCs with no personal name (e.g.
+    // "Independent Tinker", "Material Supplier") have an EMPTY Title and carry the vocation
+    // word in Singular instead (stored lowercase — fine, matching below is case-insensitive).
+    private readonly Dictionary<uint, string> npcSingularCache = new();
+    // Requested in English regardless of the client's actual game language, so keyword
+    // matching below (MenderTitleKeywords/ShopTitleKeywords) is language-independent —
+    // an NPC titled "Heiler" on a German client still resolves to "Mender" here.
     private readonly ExcelSheet<ENpcResident> npcResidentSheet;
+    // Client's actual game language, unforced — NOT used for matching, only so /compass
+    // debug can print it side-by-side with npcResidentSheet above and show whether a
+    // problem is "English-forcing isn't working" vs "this field is empty either way".
+    private readonly ExcelSheet<ENpcResident> npcResidentSheetClientLang;
     private readonly ExcelSheet<ClassJob>     classJobSheet;
 
-    private static readonly string[] MenderTitleKeywords = { "Mender" };
+    // Matched against the English ENpcResident Title AND Singular (see caches above),
+    // regardless of client language. Grow these lists as new NPC vocation words turn up —
+    // use /compass debug near the NPC to read its TitleEN/SingularEN.
+    private static readonly string[] MenderTitleKeywords = { "Mender", "Tinker" };
 
     // Unified candidate list (game objects + FATEs) reused every frame — no per-frame alloc.
     // Obj != null → game object; Fate != null → FATE. T is normalised distance fraction.
@@ -70,10 +88,12 @@ public sealed class CompassHud : IDisposable
     private const float IconSizeMultiplier          = 1.5f;
     private const float AetheryteIconSizeMultiplier = 1.75f;
 
+    // Same English-forced matching as MenderTitleKeywords above.
     private static readonly string[] ShopTitleKeywords =
     {
         "Merchant", "Vendor", "Trader", "Sutler", "Supplier", "Junkmonger",
         "Fishmonger", "Dyemonger", "Jeweler", "Apothecary", "Culinarian",
+        "Salvager", "Exchange", "Clothier",
     };
 
     private static readonly (float Deg, string Label, bool IsMajor)[] Directions =
@@ -115,7 +135,8 @@ public sealed class CompassHud : IDisposable
         gatheringPointSheet     = dataManager.GetExcelSheet<GatheringPoint>();
         gatheringPointBaseSheet = dataManager.GetExcelSheet<GatheringPointBase>();
         gatheringTypeSheet      = dataManager.GetExcelSheet<GatheringType>();
-        npcResidentSheet        = dataManager.GetExcelSheet<ENpcResident>();
+        npcResidentSheet        = dataManager.GetExcelSheet<ENpcResident>(ClientLanguage.English);
+        npcResidentSheetClientLang = dataManager.GetExcelSheet<ENpcResident>();
         classJobSheet           = dataManager.GetExcelSheet<ClassJob>();
 
         // OnDataUpdate fires every frame with ALL current nameplates (not just deltas).
@@ -613,12 +634,21 @@ public sealed class CompassHud : IDisposable
             float iconSize = 0f;
 
             bool  isAetheryteKind = ClassifyAetheryte(obj) != AetheryteNameKind.None;
+            bool  isTransportKind = obj.ObjectKind == ObjectKind.EventNpc && FindTransportEntry(obj.BaseId) is not null;
             float npcIconSize     = Lerp(config.NpcQuestIconMinSize, config.NpcQuestIconMaxSize, t) * IconSizeMultiplier;
 
             if (config.ShowAetheryteIcons && isAetheryteKind)
             {
                 iconId   = GetAetheryteIconId(obj);
                 iconSize = Lerp(config.AetheryteIconMinSize, config.AetheryteIconMaxSize, t) * AetheryteIconSizeMultiplier;
+            }
+            else if (config.ShowTransportIcons && isTransportKind && config.TransportIconId > 0)
+            {
+                // Curated/explicit identity takes priority over heuristic signals below
+                // (quest marker, title keyword) — a ferry NPC should look the same
+                // regardless of whether it momentarily also has a daily quest marker lit.
+                iconId   = config.TransportIconId;
+                iconSize = Lerp(config.TransportIconMinSize, config.TransportIconMaxSize, t);
             }
             else if (config.ShowNpcQuestIcons
                 && obj.ObjectKind == ObjectKind.EventNpc
@@ -629,14 +659,14 @@ public sealed class CompassHud : IDisposable
             }
             else if (config.ShowMenderIcons
                 && obj.ObjectKind == ObjectKind.EventNpc
-                && NpcMatchesKeywords(obj, GetNpcTitle(obj.BaseId), MenderTitleKeywords))
+                && IsMenderNpc(obj))
             {
                 iconId   = config.MenderIconId;
                 iconSize = npcIconSize;
             }
             else if (config.ShowShopIcons
                 && obj.ObjectKind == ObjectKind.EventNpc
-                && NpcMatchesKeywords(obj, GetNpcTitle(obj.BaseId), ShopTitleKeywords))
+                && IsShopNpc(obj))
             {
                 iconId   = config.ShopIconId;
                 iconSize = npcIconSize;
@@ -736,9 +766,10 @@ public sealed class CompassHud : IDisposable
                         }
                     }
                 }
-                else if (obj.ObjectKind == ObjectKind.EventNpc && !isAetheryteKind)
+                else if (obj.ObjectKind == ObjectKind.EventNpc && !isAetheryteKind && !isTransportKind)
                 {
-                    // Excludes aetheryte-classified EventNpcs (Firmament crystals) — handled below.
+                    // Excludes aetheryte-classified (Firmament crystals) and curated transport
+                    // NPCs — both handled below with their own filled-dot styling.
                     DrawHollowDot(dl, sx, cy,
                         Lerp(config.NpcQuestIconMinSize, config.NpcQuestIconMaxSize, t), col, alpha);
                 }
@@ -750,6 +781,12 @@ public sealed class CompassHud : IDisposable
                 {
                     DrawFilledDot(dl, sx, cy,
                         Lerp(config.AetheryteIconMinSize, config.AetheryteIconMaxSize, t), col, alpha);
+                }
+                else if (isTransportKind)
+                {
+                    // Filled dot (not hollow) — same "this is a POI with a function" language as Aetheryte.
+                    DrawFilledDot(dl, sx, cy,
+                        Lerp(config.TransportIconMinSize, config.TransportIconMaxSize, t), col, alpha);
                 }
                 else if (obj.ObjectKind == ObjectKind.Treasure)
                 {
@@ -849,12 +886,46 @@ public sealed class CompassHud : IDisposable
         };
     }
 
-    /// <summary>Resolves an NPC's title via ENpcResident, cached permanently per BaseId. "" if none.</summary>
+    // Reflects over every public property on a Lumina row struct and prints Name=Value
+    // for each. Used by /compass debug to inspect raw sheet data directly when a specific
+    // field (e.g. Title) isn't behaving as expected, instead of guessing field names blind.
+    private static string DumpAllFields<T>(T? row) where T : struct
+    {
+        if (row is not { } r) return "<no row for this BaseId>";
+        var parts = new List<string>();
+        foreach (var prop in typeof(T).GetProperties())
+        {
+            string val;
+            try
+            {
+                var v = prop.GetValue(r);
+                val = v?.ToString() ?? "null";
+                if (val.Length > 60) val = val[..60] + "…"; // arrays/sub-structs can be huge
+            }
+            catch (Exception ex) { val = $"<threw {ex.GetType().Name}>"; }
+            parts.Add($"{prop.Name}={val}");
+        }
+        return string.Join(", ", parts);
+    }
+
+    /// <summary>Resolves an NPC's English title via ENpcResident, cached permanently per BaseId. "" if none.</summary>
     private string GetNpcTitle(uint baseId)
     {
         if (npcTitleCache.TryGetValue(baseId, out string? cached)) return cached;
         string title = npcResidentSheet.GetRowOrDefault(baseId) is { } row ? row.Title.ToString() : "";
         return npcTitleCache[baseId] = title;
+    }
+
+    /// <summary>
+    /// Resolves an NPC's English "Singular" text via ENpcResident, cached permanently per
+    /// BaseId. "" if none. This is where generic flavor NPCs with no personal name (empty
+    /// Title) carry their vocation word instead — see npcSingularCache above.
+    /// </summary>
+    private string GetNpcSingular(uint baseId)
+    {
+        if (npcSingularCache.TryGetValue(baseId, out string? cached)) return cached;
+        string singular = npcResidentSheet.GetRowOrDefault(baseId) is { } row ? row.Singular.ToString() : "";
+        return npcSingularCache[baseId] = singular;
     }
 
     private static bool TitleContainsAny(string title, string[] keywords)
@@ -866,9 +937,15 @@ public sealed class CompassHud : IDisposable
         return false;
     }
 
-    // Checks both ENpcResident Title and live display Name — both patterns occur in practice.
-    private static bool NpcMatchesKeywords(IGameObject obj, string title, string[] keywords) =>
-        TitleContainsAny(title, keywords) || TitleContainsAny(obj.Name.TextValue, keywords);
+    // Language-independent: title/singular come from the English-forced npcResidentSheet,
+    // which doesn't depend on client language.
+    private bool IsMenderNpc(IGameObject obj) =>
+        TitleContainsAny(GetNpcTitle(obj.BaseId), MenderTitleKeywords) ||
+        TitleContainsAny(GetNpcSingular(obj.BaseId), MenderTitleKeywords);
+
+    private bool IsShopNpc(IGameObject obj) =>
+        TitleContainsAny(GetNpcTitle(obj.BaseId), ShopTitleKeywords) ||
+        TitleContainsAny(GetNpcSingular(obj.BaseId), ShopTitleKeywords);
 
     private enum AetheryteNameKind { None, Big, Shard }
 
@@ -902,6 +979,27 @@ public sealed class CompassHud : IDisposable
         return true;
     }
 
+    // Linear scan — list is small (curated by hand), same cost class as PlayerIconOverrides
+    // lookup. Shared helper kept generic since Transport (the only remaining curated-BaseId
+    // list — it has no automatic detection at all) reuses CuratedNpcEntry/DrawCuratedNpcList.
+    private static CuratedNpcEntry? FindCuratedEntry(List<CuratedNpcEntry> list, uint baseId)
+    {
+        foreach (var e in list)
+            if (e.BaseId == baseId) return e;
+        return null;
+    }
+
+    private CuratedNpcEntry? FindTransportEntry(uint baseId) => FindCuratedEntry(config.TransportNpcs, baseId);
+
+    // Returns true if obj's BaseId is a curated transport NPC. color=0 if hidden by config.
+    // Mirrors TryGetAetheryteMarkerColor's "classify regardless of visibility" shape.
+    private bool TryGetTransportMarkerColor(IGameObject obj, out uint color)
+    {
+        if (FindTransportEntry(obj.BaseId) is null) { color = 0u; return false; }
+        color = config.ShowTransportNpcs ? C(config.TransportColor) : 0u;
+        return true;
+    }
+
     private uint MarkerColor(IGameObject obj, IPlayerCharacter player)
     {
         switch (obj.ObjectKind)
@@ -922,6 +1020,9 @@ public sealed class CompassHud : IDisposable
             case ObjectKind.EventNpc:
                 // Firmament crystals are EventNpcs — route through aetheryte path, not NPC color.
                 if (TryGetAetheryteMarkerColor(obj, out uint eventNpcAetherCol)) return eventNpcAetherCol;
+                // Curated transport NPCs (ferries, etc) — independent of ShowNpcs, same reasoning
+                // as Aetherytes above: these take you somewhere, not generic background flavor.
+                if (TryGetTransportMarkerColor(obj, out uint eventNpcTransportCol)) return eventNpcTransportCol;
                 if (!config.ShowNpcs) return 0u;
                 if (config.NpcsOnlyIfTargetable && !obj.IsTargetable) return 0u;
                 return C(config.NpcColor);
@@ -1071,18 +1172,35 @@ public sealed class CompassHud : IDisposable
         foreach (var (dist, obj) in nearby)
         {
             string extra = "";
+            string fieldDumpEn = "", fieldDumpLocal = "";
             if (obj.ObjectKind == ObjectKind.EventNpc)
             {
                 string title        = GetNpcTitle(obj.BaseId);
+                string singular     = GetNpcSingular(obj.BaseId);
                 bool   hasQuestIcon = npcMarkerIcons.TryGetValue(obj.GameObjectId, out int qIconId) && qIconId > 0;
-                bool   isMender     = NpcMatchesKeywords(obj, title, MenderTitleKeywords);
-                bool   isShop       = NpcMatchesKeywords(obj, title, ShopTitleKeywords);
-                string winner       = hasQuestIcon ? $"QuestMarker(icon={qIconId})"
+                bool   isMender     = IsMenderNpc(obj);
+                bool   isShop       = IsShopNpc(obj);
+                var    transport    = FindTransportEntry(obj.BaseId);
+                string winner       = transport != null ? $"Transport({transport.Label})"
+                                    : hasQuestIcon ? $"QuestMarker(icon={qIconId})"
                                     : isMender     ? "Mender"
                                     : isShop       ? "Shop"
                                     : "none/dot";
-                extra = $" | Title=\"{title}\" | QuestIcon={hasQuestIcon,-5} | " +
-                        $"IsMender={isMender,-5} | IsShop={isShop,-5} | WouldShow={winner}";
+                // TitleEN/SingularEN are always English regardless of client language — both
+                // are what MenderTitleKeywords/ShopTitleKeywords matching actually runs
+                // against (named NPCs carry their vocation in Title; generic flavor NPCs with
+                // no personal name carry it in Singular instead, with Title empty). If the
+                // word you expect is in one of these but IsMender/IsShop is still false, that
+                // word is missing from the keyword list above.
+                extra = $" | TitleEN=\"{title}\" | SingularEN=\"{singular}\" | QuestIcon={hasQuestIcon,-5} | " +
+                        $"IsMender={isMender,-5} | IsShop={isShop,-5} | IsTransport={(transport != null),-5} | WouldShow={winner}";
+
+                // Raw ENpcResident dump, both language variants, so we can tell whether an
+                // empty/wrong match is "English-forcing broke the lookup" (dumps would differ
+                // in row-found-ness) vs "Title just isn't the field with the vendor label"
+                // (both dumps find the row fine, but Title is blank in both).
+                fieldDumpEn    = DumpAllFields(npcResidentSheet.GetRowOrDefault(obj.BaseId));
+                fieldDumpLocal = DumpAllFields(npcResidentSheetClientLang.GetRowOrDefault(obj.BaseId));
             }
             else if (obj.ObjectKind == ObjectKind.Treasure)
             {
@@ -1093,6 +1211,11 @@ public sealed class CompassHud : IDisposable
                 $"[SkyrimCompass debug] {dist,6:F1}y | Kind={obj.ObjectKind,-19} | " +
                 $"BaseId={obj.BaseId,-8} | Targetable={obj.IsTargetable,-5} | " +
                 $"Name=\"{obj.Name.TextValue}\"{extra}");
+            if (obj.ObjectKind == ObjectKind.EventNpc)
+            {
+                log.Info($"    ENpcResident[EN,forced]  {fieldDumpEn}");
+                log.Info($"    ENpcResident[client-lang] {fieldDumpLocal}");
+            }
         }
         log.Info("[SkyrimCompass debug] Done. Use /xllog in-game to view the log window.");
     }

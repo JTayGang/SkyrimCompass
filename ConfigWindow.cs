@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Numerics;
 using Dalamud.Interface.Windowing;
 using Dalamud.Bindings.ImGui;
@@ -618,6 +619,69 @@ public sealed class ConfigWindow : Window
 
     // ── NPCs tab ─────────────────────────────────────────────────────────────
 
+    // One curated NPC row: BaseId (the only reliable, language-independent match key)
+    // + a free-text label purely for your own reference — has no effect on matching.
+    private static bool DrawCuratedNpcRow(CuratedNpcEntry e, string idSuffix)
+    {
+        bool changed = false;
+
+        int baseId = (int)e.BaseId;
+        ImGui.SetNextItemWidth(90f);
+        if (ImGui.InputInt($"##{idSuffix}id", ref baseId, 0, 0))
+        { e.BaseId = (uint)Math.Max(0, baseId); changed = true; }
+        if (ImGui.IsItemHovered())
+            ImGui.SetTooltip("NPC BaseId — find it with /compass debug while standing next to the NPC.");
+        ImGui.SameLine();
+
+        string label = e.Label;
+        ImGui.SetNextItemWidth(200f);
+        if (ImGui.InputText($"##{idSuffix}label", ref label, 64))
+        { e.Label = label; changed = true; }
+        if (ImGui.IsItemHovered())
+            ImGui.SetTooltip("Just a note to remember what this is (e.g. \"Limsa Ferry Dock\"). No effect on detection.");
+
+        return changed;
+    }
+
+    // Full curated-NPC section: header+tooltip, existing rows with remove buttons, add
+    // button. Currently only used by Transport (no automatic detection exists for it, unlike
+    // Mender/Shop which are keyword-matched — see MenderTitleKeywords/ShopTitleKeywords in
+    // CompassHud.cs), but kept generic/reusable in case another curated list is needed later.
+    private static bool DrawCuratedNpcList(string header, List<CuratedNpcEntry> list, string idSuffix)
+    {
+        bool changed = false;
+
+        ImGui.TextDisabled(header);
+        if (ImGui.IsItemHovered())
+            ImGui.SetTooltip(
+                "Use /compass debug while standing next to an NPC to find its BaseId —\n" +
+                "the debug log also tells you whether a given BaseId already matches.");
+
+        if (list.Count == 0)
+            ImGui.TextDisabled("  (none yet — add one below)");
+
+        int removeAt = -1;
+        for (int i = 0; i < list.Count; i++)
+        {
+            ImGui.PushID(i);
+            if (ImGui.Button($"X##rm{idSuffix}")) removeAt = i;
+            if (ImGui.IsItemHovered()) ImGui.SetTooltip("Remove this entry");
+            ImGui.SameLine();
+            changed |= DrawCuratedNpcRow(list[i], idSuffix);
+            ImGui.PopID();
+        }
+        if (removeAt >= 0)
+        { list.RemoveAt(removeAt); changed = true; }
+
+        if (ImGui.Button($"+ Add##add{idSuffix}"))
+        {
+            list.Add(new CuratedNpcEntry());
+            changed = true;
+        }
+
+        return changed;
+    }
+
     private static bool DrawNpcsTab(Configuration cfg)
     {
         if (!ImGui.BeginTabItem("NPCs")) return false;
@@ -651,8 +715,9 @@ public sealed class ConfigWindow : Window
         { cfg.ShowMenderIcons = mIcon; changed = true; }
         if (ImGui.IsItemHovered())
             ImGui.SetTooltip(
-                "Shows the real game icon for Mender NPCs (gear repair vendors),\n" +
-                "identified by their \"Mender\" job title.\n" +
+                "Shows the real game icon for Mender NPCs (gear repair vendors).\n" +
+                "Detected by job title, always checked in English regardless of\n" +
+                "your client's language — works the same on EN/DE/FR/JA clients.\n" +
                 "Shares the size sliders below with every other NPC marker.");
 
         bool sIcon = cfg.ShowShopIcons;
@@ -660,9 +725,11 @@ public sealed class ConfigWindow : Window
         { cfg.ShowShopIcons = sIcon; changed = true; }
         if (ImGui.IsItemHovered())
             ImGui.SetTooltip(
-                "Shows the real game icon for Shop/Trader NPCs, identified by a\n" +
-                "\"Merchant\", \"Vendor\", or \"Trader\" job title.\n" +
-                "Shares the size sliders below with every other NPC marker.");
+                "Shows the real game icon for Shop/Trader NPCs (\"Merchant\",\n" +
+                "\"Vendor\", \"Trader\", etc.). Detected by job title, always checked\n" +
+                "in English regardless of your client's language — works the same\n" +
+                "on EN/DE/FR/JA clients. Shares the size sliders below with every\n" +
+                "other NPC marker.");
 
         float qMin = cfg.NpcQuestIconMinSize, qMax = cfg.NpcQuestIconMaxSize;
         if (DrawSizeSliders(ref qMin, ref qMax, 50, 60, "q"))
@@ -673,6 +740,61 @@ public sealed class ConfigWindow : Window
                 "above AND the plain dot shown when none of those apply.");
 
         ImGui.EndDisabled();
+        ImGui.Unindent();
+
+        // ── Transport NPCs (ferries, etc) ───────────────────────────────────────
+        // Deliberately OUTSIDE the BeginDisabled(!ShowNpcs) block above — independent
+        // of the generic "Show NPCs" toggle, same reasoning as Aetherytes get their
+        // own tab: these take you somewhere, so you may want them visible even with
+        // every other NPC hidden.
+        ImGui.Spacing();
+        ImGui.Separator();
+        ImGui.Spacing();
+
+        bool    tb = cfg.ShowTransportNpcs;
+        Vector4 tc = cfg.TransportColor;
+        changed |= DrawEnableAndColor("transport", "Transport NPCs (ferries, etc)", ref tb, ref tc);
+        cfg.ShowTransportNpcs = tb; cfg.TransportColor = tc;
+        if (ImGui.IsItemHovered())
+            ImGui.SetTooltip(
+                "Matched by exact BaseId below, not job title — many transport NPCs\n" +
+                "reuse generic flavor names (e.g. \"Storm Private\") that are also used\n" +
+                "by unrelated background NPCs elsewhere, so title matching isn't\n" +
+                "reliable here the way it is for Mender/Shop above.");
+
+        ImGui.Indent();
+        ImGui.BeginDisabled(!cfg.ShowTransportNpcs);
+
+        bool tIcon = cfg.ShowTransportIcons;
+        if (ImGui.Checkbox("Show real icon##ticon", ref tIcon))
+        { cfg.ShowTransportIcons = tIcon; changed = true; }
+        if (ImGui.IsItemHovered())
+            ImGui.SetTooltip(
+                "No confirmed game icon ID for boats/ferries yet — browse available\n" +
+                "icons with /xldata icons (try anchor/boat/ship-themed results) and\n" +
+                "paste the ID below once you find one you like.\n" +
+                "Until then, Icon ID 0 just means \"no icon\" — entries still show as\n" +
+                "the colored dot above, so detection works either way.");
+
+        ImGui.Indent();
+        ImGui.BeginDisabled(!cfg.ShowTransportIcons);
+        int tIconId = cfg.TransportIconId;
+        ImGui.SetNextItemWidth(90f);
+        if (ImGui.InputInt("Icon ID##ticonid", ref tIconId, 0, 0))
+        { cfg.TransportIconId = Math.Max(0, tIconId); changed = true; }
+
+        float tMin = cfg.TransportIconMinSize, tMax = cfg.TransportIconMaxSize;
+        if (DrawSizeSliders(ref tMin, ref tMax, 50, 60, "t"))
+        { cfg.TransportIconMinSize = tMin; cfg.TransportIconMaxSize = tMax; changed = true; }
+        ImGui.EndDisabled();
+        ImGui.Unindent();
+
+        ImGui.Spacing();
+        ImGui.Separator();
+        ImGui.Spacing();
+        changed |= DrawCuratedNpcList("Known transport NPCs", cfg.TransportNpcs, "tr");
+
+        ImGui.EndDisabled(); // !ShowTransportNpcs
         ImGui.Unindent();
 
         ImGui.EndTabItem();
