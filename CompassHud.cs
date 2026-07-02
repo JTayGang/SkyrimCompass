@@ -93,8 +93,14 @@ public sealed class CompassHud : IDisposable
     {
         "Merchant", "Vendor", "Trader", "Sutler", "Supplier", "Junkmonger",
         "Fishmonger", "Dyemonger", "Jeweler", "Apothecary", "Culinarian",
-        "Salvager", "Exchange", "Clothier",
+        "Salvager", "Exchange", "Clothier", "Outfitter",
     };
+
+    // Same English-forced matching as MenderTitleKeywords above.
+    private static readonly string[] ChocoboKeepTitleKeywords = { "Chocobokeep" };
+
+    // Same English-forced matching as MenderTitleKeywords above.
+    private static readonly string[] FastTravelTitleKeywords = { "Skipper" };
 
     private static readonly (float Deg, string Label, bool IsMajor)[] Directions =
     [
@@ -634,21 +640,12 @@ public sealed class CompassHud : IDisposable
             float iconSize = 0f;
 
             bool  isAetheryteKind = ClassifyAetheryte(obj) != AetheryteNameKind.None;
-            bool  isTransportKind = obj.ObjectKind == ObjectKind.EventNpc && FindTransportEntry(obj.BaseId) is not null;
             float npcIconSize     = Lerp(config.NpcQuestIconMinSize, config.NpcQuestIconMaxSize, t) * IconSizeMultiplier;
 
             if (config.ShowAetheryteIcons && isAetheryteKind)
             {
                 iconId   = GetAetheryteIconId(obj);
                 iconSize = Lerp(config.AetheryteIconMinSize, config.AetheryteIconMaxSize, t) * AetheryteIconSizeMultiplier;
-            }
-            else if (config.ShowTransportIcons && isTransportKind && config.TransportIconId > 0)
-            {
-                // Curated/explicit identity takes priority over heuristic signals below
-                // (quest marker, title keyword) — a ferry NPC should look the same
-                // regardless of whether it momentarily also has a daily quest marker lit.
-                iconId   = config.TransportIconId;
-                iconSize = Lerp(config.TransportIconMinSize, config.TransportIconMaxSize, t);
             }
             else if (config.ShowNpcQuestIcons
                 && obj.ObjectKind == ObjectKind.EventNpc
@@ -669,6 +666,20 @@ public sealed class CompassHud : IDisposable
                 && IsShopNpc(obj))
             {
                 iconId   = config.ShopIconId;
+                iconSize = npcIconSize;
+            }
+            else if (config.ShowChocoboKeepIcons
+                && obj.ObjectKind == ObjectKind.EventNpc
+                && IsChocoboKeepNpc(obj))
+            {
+                iconId   = config.ChocoboKeepIconId;
+                iconSize = npcIconSize;
+            }
+            else if (config.ShowFastTravelIcons
+                && obj.ObjectKind == ObjectKind.EventNpc
+                && IsFastTravelNpc(obj))
+            {
+                iconId   = config.FastTravelIconId;
                 iconSize = npcIconSize;
             }
             else if (config.ShowGatheringIcons && obj.ObjectKind == ObjectKind.GatheringPoint)
@@ -766,10 +777,10 @@ public sealed class CompassHud : IDisposable
                         }
                     }
                 }
-                else if (obj.ObjectKind == ObjectKind.EventNpc && !isAetheryteKind && !isTransportKind)
+                else if (obj.ObjectKind == ObjectKind.EventNpc && !isAetheryteKind)
                 {
-                    // Excludes aetheryte-classified (Firmament crystals) and curated transport
-                    // NPCs — both handled below with their own filled-dot styling.
+                    // Excludes aetheryte-classified (Firmament crystals) — handled below
+                    // with its own filled-dot styling.
                     DrawHollowDot(dl, sx, cy,
                         Lerp(config.NpcQuestIconMinSize, config.NpcQuestIconMaxSize, t), col, alpha);
                 }
@@ -781,12 +792,6 @@ public sealed class CompassHud : IDisposable
                 {
                     DrawFilledDot(dl, sx, cy,
                         Lerp(config.AetheryteIconMinSize, config.AetheryteIconMaxSize, t), col, alpha);
-                }
-                else if (isTransportKind)
-                {
-                    // Filled dot (not hollow) — same "this is a POI with a function" language as Aetheryte.
-                    DrawFilledDot(dl, sx, cy,
-                        Lerp(config.TransportIconMinSize, config.TransportIconMaxSize, t), col, alpha);
                 }
                 else if (obj.ObjectKind == ObjectKind.Treasure)
                 {
@@ -947,6 +952,14 @@ public sealed class CompassHud : IDisposable
         TitleContainsAny(GetNpcTitle(obj.BaseId), ShopTitleKeywords) ||
         TitleContainsAny(GetNpcSingular(obj.BaseId), ShopTitleKeywords);
 
+    private bool IsChocoboKeepNpc(IGameObject obj) =>
+        TitleContainsAny(GetNpcTitle(obj.BaseId), ChocoboKeepTitleKeywords) ||
+        TitleContainsAny(GetNpcSingular(obj.BaseId), ChocoboKeepTitleKeywords);
+
+    private bool IsFastTravelNpc(IGameObject obj) =>
+        TitleContainsAny(GetNpcTitle(obj.BaseId), FastTravelTitleKeywords) ||
+        TitleContainsAny(GetNpcSingular(obj.BaseId), FastTravelTitleKeywords);
+
     private enum AetheryteNameKind { None, Big, Shard }
 
     // ObjectKind.Aetheryte → always Big or Shard (Shard if name matches AethernetShardName).
@@ -979,27 +992,6 @@ public sealed class CompassHud : IDisposable
         return true;
     }
 
-    // Linear scan — list is small (curated by hand), same cost class as PlayerIconOverrides
-    // lookup. Shared helper kept generic since Transport (the only remaining curated-BaseId
-    // list — it has no automatic detection at all) reuses CuratedNpcEntry/DrawCuratedNpcList.
-    private static CuratedNpcEntry? FindCuratedEntry(List<CuratedNpcEntry> list, uint baseId)
-    {
-        foreach (var e in list)
-            if (e.BaseId == baseId) return e;
-        return null;
-    }
-
-    private CuratedNpcEntry? FindTransportEntry(uint baseId) => FindCuratedEntry(config.TransportNpcs, baseId);
-
-    // Returns true if obj's BaseId is a curated transport NPC. color=0 if hidden by config.
-    // Mirrors TryGetAetheryteMarkerColor's "classify regardless of visibility" shape.
-    private bool TryGetTransportMarkerColor(IGameObject obj, out uint color)
-    {
-        if (FindTransportEntry(obj.BaseId) is null) { color = 0u; return false; }
-        color = config.ShowTransportNpcs ? C(config.TransportColor) : 0u;
-        return true;
-    }
-
     private uint MarkerColor(IGameObject obj, IPlayerCharacter player)
     {
         switch (obj.ObjectKind)
@@ -1020,9 +1012,6 @@ public sealed class CompassHud : IDisposable
             case ObjectKind.EventNpc:
                 // Firmament crystals are EventNpcs — route through aetheryte path, not NPC color.
                 if (TryGetAetheryteMarkerColor(obj, out uint eventNpcAetherCol)) return eventNpcAetherCol;
-                // Curated transport NPCs (ferries, etc) — independent of ShowNpcs, same reasoning
-                // as Aetherytes above: these take you somewhere, not generic background flavor.
-                if (TryGetTransportMarkerColor(obj, out uint eventNpcTransportCol)) return eventNpcTransportCol;
                 if (!config.ShowNpcs) return 0u;
                 if (config.NpcsOnlyIfTargetable && !obj.IsTargetable) return 0u;
                 return C(config.NpcColor);
@@ -1175,25 +1164,29 @@ public sealed class CompassHud : IDisposable
             string fieldDumpEn = "", fieldDumpLocal = "";
             if (obj.ObjectKind == ObjectKind.EventNpc)
             {
-                string title        = GetNpcTitle(obj.BaseId);
-                string singular     = GetNpcSingular(obj.BaseId);
-                bool   hasQuestIcon = npcMarkerIcons.TryGetValue(obj.GameObjectId, out int qIconId) && qIconId > 0;
-                bool   isMender     = IsMenderNpc(obj);
-                bool   isShop       = IsShopNpc(obj);
-                var    transport    = FindTransportEntry(obj.BaseId);
-                string winner       = transport != null ? $"Transport({transport.Label})"
-                                    : hasQuestIcon ? $"QuestMarker(icon={qIconId})"
-                                    : isMender     ? "Mender"
-                                    : isShop       ? "Shop"
-                                    : "none/dot";
+                string title         = GetNpcTitle(obj.BaseId);
+                string singular      = GetNpcSingular(obj.BaseId);
+                bool   hasQuestIcon  = npcMarkerIcons.TryGetValue(obj.GameObjectId, out int qIconId) && qIconId > 0;
+                bool   isMender      = IsMenderNpc(obj);
+                bool   isShop        = IsShopNpc(obj);
+                bool   isChocoboKeep = IsChocoboKeepNpc(obj);
+                bool   isFastTravel  = IsFastTravelNpc(obj);
+                string winner        = hasQuestIcon  ? $"QuestMarker(icon={qIconId})"
+                                     : isMender      ? "Mender"
+                                     : isShop        ? "Shop"
+                                     : isChocoboKeep ? "ChocoboKeep"
+                                     : isFastTravel  ? "FastTravel"
+                                     : "none/dot";
                 // TitleEN/SingularEN are always English regardless of client language — both
-                // are what MenderTitleKeywords/ShopTitleKeywords matching actually runs
-                // against (named NPCs carry their vocation in Title; generic flavor NPCs with
-                // no personal name carry it in Singular instead, with Title empty). If the
-                // word you expect is in one of these but IsMender/IsShop is still false, that
-                // word is missing from the keyword list above.
+                // are what MenderTitleKeywords/ShopTitleKeywords/ChocoboKeepTitleKeywords/
+                // FastTravelTitleKeywords matching actually runs against (named NPCs carry
+                // their vocation in Title; generic flavor NPCs with no personal name carry it
+                // in Singular instead, with Title empty). If the word you expect is in one of
+                // these but the matching Is* flag is still false, that word is missing from
+                // the keyword list above.
                 extra = $" | TitleEN=\"{title}\" | SingularEN=\"{singular}\" | QuestIcon={hasQuestIcon,-5} | " +
-                        $"IsMender={isMender,-5} | IsShop={isShop,-5} | IsTransport={(transport != null),-5} | WouldShow={winner}";
+                        $"IsMender={isMender,-5} | IsShop={isShop,-5} | IsChocoboKeep={isChocoboKeep,-5} | " +
+                        $"IsFastTravel={isFastTravel,-5} | WouldShow={winner}";
 
                 // Raw ENpcResident dump, both language variants, so we can tell whether an
                 // empty/wrong match is "English-forcing broke the lookup" (dumps would differ

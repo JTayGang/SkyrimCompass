@@ -26,21 +26,6 @@ public class PlayerIconOverride
     public float   SizeMultiplier { get; set; } = 1.0f;
 }
 
-/// <summary>
-/// One curated NPC, matched by exact BaseId. Currently used only by TransportNpcs, which
-/// has no automatic detection at all (unlike Mender/Shop, which are keyword-matched — see
-/// MenderTitleKeywords/ShopTitleKeywords in CompassHud.cs). BaseId-only because many of
-/// these reuse generic flavor names (e.g. "Storm Private") shared with unrelated background
-/// NPCs. Find a BaseId via /compass debug while standing next to the NPC.
-/// </summary>
-[Serializable]
-public class CuratedNpcEntry
-{
-    public uint   BaseId { get; set; } = 0;
-    /// <summary>Just a note to remember what this is (e.g. "Limsa Ferry Dock"). No effect on matching.</summary>
-    public string Label  { get; set; } = "";
-}
-
 [Serializable]
 public class Configuration : IPluginConfiguration
 {
@@ -132,22 +117,22 @@ public class Configuration : IPluginConfiguration
     /// </summary>
     public bool ShowShopIcons { get; set; } = true;
     public int  ShopIconId    { get; set; } = 60412;
-
-    // ── Transport NPCs (ferries, etc) ───────────────────────────────────────
-    // Curated by BaseId (see CuratedNpcEntry) — independent of ShowNpcs, same
-    // carve-out pattern as Aetherytes, since these are functionally "things that
-    // take you somewhere" rather than generic flavor NPCs.
-    public bool    ShowTransportNpcs    { get; set; } = true;
-    public Vector4 TransportColor       { get; set; } = new(0.40f, 0.78f, 0.70f, 0.90f);
-    /// <summary>No confirmed icon ID yet — browse with /xldata icons and set manually. 0 = dot only.</summary>
-    public bool    ShowTransportIcons   { get; set; } = true;
-    public int     TransportIconId      { get; set; } = 0;
-    public float   TransportIconMinSize { get; set; } = 16f;
-    public float   TransportIconMaxSize { get; set; } = 28f;
-    public List<CuratedNpcEntry> TransportNpcs { get; set; } = new()
-    {
-        new CuratedNpcEntry { BaseId = 1007994, Label = "Limsa Ferry Dock" },
-    };
+    /// <summary>
+    /// Real icon for Chocobo Keep NPCs. Detected via ENpcResident's Singular (these are
+    /// unnamed generic NPCs — Title is empty), always read in English regardless of client
+    /// language — so this works the same on any game language.
+    /// Shares NpcQuestIcon size range.
+    /// </summary>
+    public bool ShowChocoboKeepIcons { get; set; } = true;
+    public int  ChocoboKeepIconId    { get; set; } = 60311;
+    /// <summary>
+    /// Real icon for Fast Travel NPCs (ferry skippers, etc). Detected via ENpcResident's
+    /// Singular (these are unnamed generic NPCs — Title is empty), always read in English
+    /// regardless of client language — so this works the same on any game language.
+    /// Shares NpcQuestIcon size range.
+    /// </summary>
+    public bool ShowFastTravelIcons { get; set; } = true;
+    public int  FastTravelIconId    { get; set; } = 60456;
 
     public bool ShowGatheringNodes          { get; set; } = true;
     /// <summary>Hides non-targetable gathering node placeholders.</summary>
@@ -201,7 +186,7 @@ public class Configuration : IPluginConfiguration
 
     /// <summary>True if any marker type is enabled (skips the object-table loop).</summary>
     public bool ShowAnyMarkers =>
-        ShowPlayers || ShowEnemies || ShowNpcs || ShowGatheringNodes || ShowTreasure || ShowAetherytes || ShowTransportNpcs;
+        ShowPlayers || ShowEnemies || ShowNpcs || ShowGatheringNodes || ShowTreasure || ShowAetherytes;
 
     public void Save(IDalamudPluginInterface pi) => pi.SavePluginConfig(this);
 }
